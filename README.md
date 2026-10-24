@@ -9,77 +9,6 @@ and a Chrome DevTools Protocol server for Puppeteer and Playwright.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## Why Julia Browser?
-
-### Built for agents, not adapted for them
-
-Most agent tooling puts a desktop browser behind a remote-control protocol. Julia Browser was
-designed from the start around what an agent does:
-
-- read the page
-- find the control it needs
-- act on that control
-- check what changed
-
-Every part of the engine answers to that loop.
-
-### The web as it really runs
-
-Modern sites are applications: React, Vue, Angular, Svelte, web components, service workers and
-module bundles. A fetch-and-parse scraper sees an empty shell. Julia Browser runs the page's own
-JavaScript in Mozilla SpiderMonkey, the engine inside Firefox. Pages run against a standards-based
-DOM that scores above 90% on the core Web Platform Tests suites (html, dom, shadow-dom, url). The
-page stays live after it loads, so single-page apps keep working as the agent clicks through them.
-
-### Output an agent can read
-
-A raw DOM dump is noisy, and reading only screenshots is slow and expensive. Julia Browser gives the
-model what a person would take in:
-
-- the page as Markdown, in visual order, with landmarks and overlays marked
-- numbered controls with their labels, values and state
-- a screenshot when the task needs one
-
-The same layout engine as Firefox (Stylo) decides what is visible. Closed menus, hidden panels and
-off-screen content don't distract the agent.
-
-### Input that frameworks trust
-
-Clicks, typing, key presses, drags and uploads go through the full pointer and keyboard event
-sequence, as trusted events. Controlled inputs, autocomplete boxes, custom dropdowns and date
-pickers react as they do for a person. The agent works with selectors, visible text, element
-numbers or screen coordinates.
-
-### Credentials the model never sees
-
-The built-in vault stores passwords, TOTP secrets and passkeys encrypted on disk:
-
-- The agent asks to sign in, and the browser fills the fields itself. Secrets never appear in
-  prompts, logs or tool results.
-- Each site has to be allowed explicitly, and every use is written to an audit log.
-- WebAuthn passkeys and hardware security keys work too.
-
-### Fits the stack you already have
-
-One engine with a choice of front ends:
-
-| Front end | Use |
-| --- | --- |
-| CLI | Humans and shell scripts |
-| Persistent agent session | Command-by-command agents |
-| Python package | `pip install julia-browser`, nothing else to install |
-| Rust library | Embedding the engine |
-| Chrome DevTools Protocol server | Existing Puppeteer and Playwright code, unchanged |
-
-There is no Chrome binary to ship, no driver process and no GPU. Each page runs on its own engine
-thread, so many browsers run side by side in one process.
-
-### Proven on real tasks
-
-On Online-Mind2Web and WebVoyager, julia-browser with a small, low-cost model (Claude Haiku 5.5)
-completes about 87% of tasks on live websites: shopping, travel, government, documentation and
-media sites. See the benchmarks below.
-
 ## Benchmarks
 
 Agent and research benchmarks on live websites, with julia-browser as the browser and Claude Haiku 5.5
@@ -225,6 +154,77 @@ Guides are in [`docs/`](docs/README.md):
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
+
+## Why Julia Browser?
+
+### Built for agents, not adapted for them
+
+Most agent tooling puts a desktop browser behind a remote-control protocol. Julia Browser was
+designed from the start around what an agent does:
+
+- read the page
+- find the control it needs
+- act on that control
+- check what changed
+
+Every part of the engine answers to that loop.
+
+### The web as it really runs
+
+Modern sites are applications: React, Vue, Angular, Svelte, web components, service workers and
+module bundles. A fetch-and-parse scraper sees an empty shell. Julia Browser runs the page's own
+JavaScript in Mozilla SpiderMonkey, the engine inside Firefox. Pages run against a standards-based
+DOM that scores above 90% on the core Web Platform Tests suites (html, dom, shadow-dom, url). The
+page stays live after it loads, so single-page apps keep working as the agent clicks through them.
+
+### Output an agent can read
+
+A raw DOM dump is noisy, and reading only screenshots is slow and expensive. Julia Browser gives the
+model what a person would take in:
+
+- the page as Markdown, in visual order, with landmarks and overlays marked
+- numbered controls with their labels, values and state
+- a screenshot when the task needs one
+
+The same layout engine as Firefox (Stylo) decides what is visible. Closed menus, hidden panels and
+off-screen content don't distract the agent.
+
+### Input that frameworks trust
+
+Clicks, typing, key presses, drags and uploads go through the full pointer and keyboard event
+sequence, as trusted events. Controlled inputs, autocomplete boxes, custom dropdowns and date
+pickers react as they do for a person. The agent works with selectors, visible text, element
+numbers or screen coordinates.
+
+### Credentials the model never sees
+
+The built-in vault stores passwords, TOTP secrets and passkeys encrypted on disk:
+
+- The agent asks to sign in, and the browser fills the fields itself. Secrets never appear in
+  prompts, logs or tool results.
+- Each site has to be allowed explicitly, and every use is written to an audit log.
+- WebAuthn passkeys and hardware security keys work too.
+
+### Fits the stack you already have
+
+One engine with a choice of front ends:
+
+| Front end | Use |
+| --- | --- |
+| CLI | Humans and shell scripts |
+| Persistent agent session | Command-by-command agents |
+| Python package | `pip install julia-browser`, nothing else to install |
+| Rust library | Embedding the engine |
+| Chrome DevTools Protocol server | Existing Puppeteer and Playwright code, unchanged |
+
+There is no Chrome binary to ship, no driver process and no GPU. Each page runs on its own engine
+thread, so many browsers run side by side in one process.
+
+### Proven on real tasks
+
+On Online-Mind2Web and WebVoyager, julia-browser with a small, low-cost model (Claude Haiku 5.5)
+completes about 87% of tasks on live websites: shopping, travel, government, documentation and
+media sites. See the benchmarks below.
 
 ## License
 
