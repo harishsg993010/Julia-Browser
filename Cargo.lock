@@ -2989,7 +2989,7 @@ dependencies = [
 
 [[package]]
 name = "julia-browser"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "aes",
  "aes-gcm",

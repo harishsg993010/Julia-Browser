@@ -1,6 +1,6 @@
 [package]
 name = "julia-browser"
-version = "2.1.0"
+version = "3.0.0"
 edition = "2021"
 authors = ["Harish Santhanalakshmi Ganesan <harishsg99@gmail.com>"]
 description = "A CLI web browser with SpiderMonkey JavaScript support, markdown rendering, an AI agent SDK and an intercepting proxy"
