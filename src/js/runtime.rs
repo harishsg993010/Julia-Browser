@@ -142,6 +142,27 @@ pub fn shutdown_engine_at_exit() {
     unsafe { jsapi::JS_ShutDown() };
 }
 
+#[cfg(unix)]
+extern "C" {
+    fn _exit(status: std::os::raw::c_int) -> !;
+}
+
+/// Exit the process from a thread that may still own a JavaScript runtime (the CLI and the
+/// session server). `std::process::exit` runs C++ static destructors while that runtime and
+/// SpiderMonkey's helper threads are alive, which segfaults on Linux; Rust destructors do not run
+/// on exit either way, so flush the standard streams and leave without them.
+pub fn exit_process(code: i32) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    #[cfg(unix)]
+    unsafe {
+        _exit(code)
+    }
+    #[cfg(not(unix))]
+    std::process::exit(code)
+}
+
 /// Free this thread's JavaScript runtime and host (page realms, GC heap, layouts, HTTP client)
 /// while the thread is still running. Engine threads that end (a Python `Browser` closing, a CDP
 /// page target going away) call it last; otherwise every runtime is leaked (see `RUNTIME`) and a

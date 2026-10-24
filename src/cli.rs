@@ -912,7 +912,7 @@ pub fn run_main() {
             crate::session::serve(&name, js.to_config(), !js.no_javascript)
         }
     };
-    std::process::exit(code);
+    crate::js::runtime::exit_process(code);
 }
 
 #[derive(Debug, Clone)]

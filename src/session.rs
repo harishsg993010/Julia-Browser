@@ -260,7 +260,7 @@ pub fn serve(name: &str, js: JsConfig, execute_js: bool) -> i32 {
                 if read_info(&name).map_or(false, |i| i.pid == pid) {
                     remove_info(&name);
                 }
-                std::process::exit(0);
+                crate::js::runtime::exit_process(0);
             }
         });
     }
@@ -275,7 +275,7 @@ pub fn serve(name: &str, js: JsConfig, execute_js: bool) -> i32 {
             if read_info(name).map_or(false, |i| i.pid == info.pid) {
                 remove_info(name);
             }
-            std::process::exit(0);
+            crate::js::runtime::exit_process(0);
         }
     }
     0
