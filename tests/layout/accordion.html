@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout fixture: accordion and hidden content</title>
+<style>
+  body { margin: 0; font-family: sans-serif; padding: 16px; }
+  .panel { display: none; }
+  .toggle:checked ~ .panel { display: block; }
+</style>
+</head>
+<body>
+<details id="d1"><summary>Closed section</summary><p>Closed content</p></details>
+<details id="d2" open><summary>Open section</summary><p>Open content</p></details>
+<input type="checkbox" id="t" class="toggle"><label for="t">Show more</label>
+<div class="panel" id="panel">Panel content</div>
+<p style="visibility: hidden" id="invisible">Invisible text</p>
+<p style="opacity: 0" id="transparent">Transparent text</p>
+<p id="end">Visible end</p>
+</body>
+</html>

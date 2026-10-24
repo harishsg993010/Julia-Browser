@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout fixture: flex columns</title>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  header { height: 60px; background: #333; color: #fff; padding: 0 20px; line-height: 60px; }
+  .wrap { display: flex; gap: 20px; padding: 20px; }
+  nav { width: 200px; flex: none; }
+  main { flex: 1; }
+  aside { width: 240px; flex: none; }
+  .hidden { display: none; }
+  .invisible { visibility: hidden; }
+  .offscreen { position: absolute; left: -9999px; }
+  .modal { position: fixed; top: 100px; left: 300px; width: 400px; height: 200px; background: #fff; border: 1px solid #000; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .card { border: 1px solid #ccc; padding: 10px; }
+  footer { height: 40px; background: #eee; }
+</style>
+</head>
+<body>
+<header id="header">Site title</header>
+<div class="wrap">
+  <nav id="nav">
+    <ul>
+      <li><a href="/a">Alpha</a></li>
+      <li><a href="/b">Beta</a></li>
+      <li><a href="/c">Gamma</a></li>
+    </ul>
+  </nav>
+  <main id="main">
+    <h1 id="h1">Article heading</h1>
+    <p id="p1">First paragraph of the article, long enough to wrap onto several lines when the main column is narrower than the viewport width.</p>
+    <p class="hidden" id="hidden">Hidden paragraph (display:none).</p>
+    <p class="invisible" id="invisible">Invisible paragraph (visibility:hidden).</p>
+    <p class="offscreen" id="offscreen">Off-screen paragraph.</p>
+    <div class="grid" id="grid">
+      <div class="card" id="c1">Card one</div>
+      <div class="card" id="c2">Card two</div>
+      <div class="card" id="c3">Card three</div>
+      <div class="card" id="c4">Card four</div>
+    </div>
+    <table id="table">
+      <tr><th>Name</th><th>Qty</th></tr>
+      <tr><td>Apples</td><td>3</td></tr>
+      <tr><td>Pears</td><td>5</td></tr>
+    </table>
+    <button id="btn">Buy now</button>
+  </main>
+  <aside id="aside">Related links<br><a href="/x">X</a> <a href="/y">Y</a></aside>
+</div>
+<div class="modal" id="modal">Cookie banner: <button id="accept">Accept</button></div>
+<footer id="footer">Footer text</footer>
+</body>
+</html>

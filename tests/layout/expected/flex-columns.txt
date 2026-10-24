@@ -1,0 +1,29 @@
+
+   Site title
+
+
+                                                                                                                                Related links
+        Alpha                         ┌─────────────[Accept]───────────────────────────┐                                        X Y
+        Beta                  Article Cookie banner:                                   │
+        Gamma                         │                                                │
+                                      │                                                │
+                              First pa│                                                │everal lines when the main column is narro
+                              than the│                                                │
+                                      │                                                │
+                                      │                                                │
+                                      │                                                │
+                              ┌───────│                                                │────┐ ┌─────────────────────────────┐
+                              │Card on│                                                │    │ │ Card three                  │
+                              │       │                                                │    │ │                             │
+                              ├───────└────────────────────────────────────────────────┘────┘ └─────────────────────────────┘
+                              │                             │
+                              │Card four                    │
+                              └─────────────────────────────┘
+                               Name  Qty
+                              Apples 3
+
+                              ┌────────┐
+                              [Buy now ]
+                              └────────┘
+
+Footer text

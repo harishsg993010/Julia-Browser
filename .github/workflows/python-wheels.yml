@@ -1,0 +1,66 @@
+# Wheels of the Python package (python/) for Linux, macOS and Windows; published to PyPI on a
+# version tag (v*) through PyPI trusted publishing (configure the project's publisher on pypi.org).
+name: python-wheels
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  wheels:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64 }
+          - { os: ubuntu-22.04-arm, target: aarch64 }
+          - { os: macos-14, target: aarch64 }
+          - { os: macos-13, target: x86_64 }
+          - { os: windows-2022, target: x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          working-directory: python
+          args: --release --out ../dist
+          # mozjs (prebuilt SpiderMonkey) and Stylo need clang and python in the build container
+          manylinux: "2_28"
+          before-script-linux: |
+            (dnf install -y clang llvm-devel python3 || (apt-get update && apt-get install -y clang libclang-dev python3)) && ln -sf "$(command -v python3)" /usr/local/bin/python
+      - name: Bundle the MSVC C++ runtime
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          pip install delvewheel
+          delvewheel repair --add-dll msvcp140.dll -w dist/repaired dist/*.whl
+          rm dist/*.whl && mv dist/repaired/*.whl dist/
+      - name: Smoke test
+        shell: bash
+        run: |
+          pip install dist/*.whl
+          python python/tests/test_smoke.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*.whl
+
+  publish:
+    needs: wheels
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

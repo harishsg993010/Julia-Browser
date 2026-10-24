@@ -1,0 +1,26 @@
+<!doctype html>
+<html dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>Layout fixture: right-to-left columns</title>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  .wrap { display: flex; gap: 20px; padding: 20px; }
+  nav { width: 200px; flex: none; }
+  main { flex: 1; }
+  aside { width: 200px; flex: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav id="nav"><ul><li><a href="/one">Menu one</a></li><li><a href="/two">Menu two</a></li><li><a href="/three">Menu three</a></li></ul></nav>
+  <main id="main">
+    <h1>Article title</h1>
+    <p>Article body text that is long enough to be a real column of content in the page.</p>
+    <p>A second paragraph keeps the column tall enough to count as a column of the page.</p>
+    <p>A third paragraph closes the article.</p>
+  </main>
+  <aside id="aside">Related items in the sidebar with a few words of text.</aside>
+</div>
+</body>
+</html>

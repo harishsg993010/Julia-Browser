@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout fixture: grid dashboard</title>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  header { height: 50px; background: #222; color: #fff; padding: 0 16px; line-height: 50px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; padding: 16px; }
+  .stat { border: 1px solid #ccc; padding: 12px; }
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 16px; }
+  .card { border: 1px solid #ccc; padding: 12px; }
+  footer { padding: 16px; color: #666; }
+</style>
+</head>
+<body>
+<header id="header">Dashboard</header>
+<section class="stats" id="stats">
+  <div class="stat"><b>Users</b><br>1,204</div>
+  <div class="stat"><b>Orders</b><br>318</div>
+  <div class="stat"><b>Revenue</b><br>$12,400</div>
+  <div class="stat"><b>Errors</b><br>3</div>
+</section>
+<section class="cards" id="cards">
+  <article class="card"><h2>Alpha</h2><p>First card body.</p></article>
+  <article class="card"><h2>Beta</h2><p>Second card body.</p></article>
+  <article class="card"><h2>Gamma</h2><p>Third card body.</p></article>
+  <article class="card"><h2>Delta</h2><p>Fourth card body.</p></article>
+  <article class="card"><h2>Epsilon</h2><p>Fifth card body.</p></article>
+  <article class="card"><h2>Zeta</h2><p>Sixth card body.</p></article>
+</section>
+<footer id="footer">Updated 5 minutes ago</footer>
+</body>
+</html>

@@ -1,0 +1,12 @@
+/target
+*.pdb
+*.stackdump
+__pycache__/
+*.egg-info/
+
+# Local working notes (status, plans, failure lists): not part of the repo
+/.notes
+
+# Benchmark datasets (some are gated or encrypted) and run outputs
+/benchmarks/data
+/benchmarks/results

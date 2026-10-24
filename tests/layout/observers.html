@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout fixture: observers and scrolling</title>
+<style>
+  body { margin: 0; }
+  .spacer { height: 2000px; background: #eee; }
+  #lazy { height: 100px; }
+  #sentinel { height: 10px; }
+</style>
+</head>
+<body>
+<h1 id="top">Top</h1>
+<div class="spacer"></div>
+<div id="lazy" data-src="image.png">lazy block</div>
+<div id="sentinel"></div>
+<script>
+  window.log = [];
+  var lazy = document.getElementById("lazy");
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) { log.push("io " + e.target.id + " " + e.isIntersecting + " " + e.intersectionRatio.toFixed(2) + " y=" + e.boundingClientRect.y + " root=" + JSON.stringify(e.rootBounds)); if (e.isIntersecting) { e.target.textContent = "loaded"; io.unobserve(e.target); } });
+  });
+  io.observe(lazy);
+  var ro = new ResizeObserver(function (entries) { entries.forEach(function (e) { log.push("ro " + e.target.id + " " + e.contentRect.width + "x" + e.contentRect.height); }); });
+  ro.observe(lazy);
+  window.addEventListener("scroll", function () { log.push("scroll " + window.scrollY); });
+</script>
+</body>
+</html>

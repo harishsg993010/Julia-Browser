@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "julia-web-agent"
+version = "0.1.0"
+description = "A general web agent that browses with julia-browser and thinks with Claude"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Harish Santhanalakshmi Ganesan", email = "harishsg99@gmail.com" }]
+dependencies = ["julia-browser>=3.0.0", "anthropic"]
+
+[project.scripts]
+julia-web-agent = "julia_web_agent.__main__:main"
+
+[tool.setuptools]
+packages = ["julia_web_agent"]

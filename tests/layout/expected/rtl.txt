@@ -1,0 +1,12 @@
+
+   Related items in the sidebar
+                                                                                                                                                Menu one
+   with a few words of text.  Article title
+                                                                                                                                                Menu two
+                                                                                                                                              Menu three
+                              Article body text that is long enough to be a real column of content in the page.
+
+
+                              A second paragraph keeps the column tall enough to count as a column of the page.
+
+                              A third paragraph closes the article.

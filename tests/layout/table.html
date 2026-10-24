@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout fixture: tables</title>
+<style>
+  body { margin: 0; font-family: sans-serif; padding: 16px; }
+  table.data { border-collapse: collapse; }
+  table.data th, table.data td { border: 1px solid #333; padding: 6px 12px; }
+  table.layout td { vertical-align: top; padding: 8px; }
+</style>
+</head>
+<body>
+<h1>Inventory</h1>
+<table class="data" id="data">
+  <thead><tr><th>Name</th><th>Qty</th><th>Price</th></tr></thead>
+  <tbody>
+    <tr><td>Apples</td><td>3</td><td>1.20</td></tr>
+    <tr><td>Pears</td><td>5</td><td>2.50</td></tr>
+  </tbody>
+</table>
+<table class="layout" role="presentation" id="layout">
+  <tr><td id="left">Left cell text</td><td id="right">Right cell text</td></tr>
+</table>
+</body>
+</html>

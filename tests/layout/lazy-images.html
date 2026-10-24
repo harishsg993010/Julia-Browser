@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout fixture: lazy loading</title>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  .spacer { height: 1500px; }
+  img { display: block; }
+</style>
+</head>
+<body>
+<h1>Gallery</h1>
+<img id="i1" data-src="/img/one.png" alt="First picture" width="200" height="100">
+<div class="spacer"></div>
+<img id="i2" data-src="/img/two.png" alt="Second picture" width="200" height="100">
+<div id="sentinel"></div>
+<ul id="list"></ul>
+<script>
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (!e.isIntersecting) return;
+      var t = e.target;
+      if (t.tagName === "IMG") {
+        t.src = t.getAttribute("data-src");
+        t.removeAttribute("data-src");
+        io.unobserve(t);
+      } else if (t.id === "sentinel") {
+        var ul = document.getElementById("list");
+        for (var i = 0; i < 5; i++) {
+          var li = document.createElement("li");
+          li.textContent = "Loaded item " + (ul.children.length + 1);
+          ul.appendChild(li);
+        }
+        if (ul.children.length >= 10) io.unobserve(t);
+      }
+    });
+  });
+  io.observe(document.getElementById("i1"));
+  io.observe(document.getElementById("i2"));
+  io.observe(document.getElementById("sentinel"));
+</script>
+</body>
+</html>

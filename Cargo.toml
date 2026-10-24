@@ -1,0 +1,170 @@
+[package]
+name = "julia-browser"
+version = "2.1.0"
+edition = "2021"
+authors = ["Harish Santhanalakshmi Ganesan <harishsg99@gmail.com>"]
+description = "A CLI web browser with SpiderMonkey JavaScript support, markdown rendering, an AI agent SDK and an intercepting proxy"
+license = "MIT"
+readme = "README.md"
+keywords = ["browser", "cli", "terminal", "spidermonkey", "scraping"]
+categories = ["command-line-utilities", "web-programming"]
+
+# The Python package (PyO3 extension, built with maturin) lives in python/.
+[workspace]
+members = [".", "python"]
+
+[lib]
+name = "julia_browser"
+path = "src/lib.rs"
+
+[[bin]]
+name = "julia-browser"
+path = "src/main.rs"
+
+[[bin]]
+name = "jbrowser"
+path = "src/bin/jbrowser.rs"
+
+[[bin]]
+name = "jb"
+path = "src/bin/jb.rs"
+
+[[bin]]
+name = "wpt"
+path = "src/bin/wpt.rs"
+
+[features]
+default = []
+layout = ["dep:blitz-dom", "dep:blitz-html", "dep:blitz-traits", "dep:style", "dep:style_traits", "dep:cssparser", "dep:euclid", "dep:style_config", "dep:parley", "blitz-dom?/floats"]
+screenshot = ["layout", "canvas", "dep:blitz-paint", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:png", "dep:anyrender_svg", "dep:usvg"]
+# Canvas 2D rasterization (vello_cpu) behind getImageData/toDataURL/drawImage.
+canvas = ["dep:vello_cpu", "dep:png"]
+# Fetch and decode images: intrinsic sizes for `naturalWidth`/`load` events and for layout/screenshots.
+images = ["dep:image", "dep:rav1d", "dep:avif-parse"]
+
+[dependencies]
+pdf-extract = "0.9"
+lopdf = "0.36"
+# Route ICU4X data warnings (missing segmentation models) through `log` instead of stderr.
+icu_provider = { version = "2", features = ["logging"] }
+# JavaScript engine: Mozilla SpiderMonkey via Servo's bindings
+mozjs = "0.26.1"
+
+# HTTP
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "cookies", "gzip", "brotli", "deflate", "rustls", "json", "charset", "http2"] }
+hyper = { version = "1", default-features = false, features = ["http1", "client"] }  # reason phrases of HTTP/1 responses
+url = "2.5"
+percent-encoding = "2.3"
+
+# HTML / CSS
+scraper = { version = "0.27", default-features = false, features = ["errors", "deterministic"] }
+ego-tree = "0.11"
+# Pinned to the versions scraper 0.27 builds against (types must match).
+html5ever = "0.39"
+markup5ever = "0.39"
+
+# Data
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+urlpattern = "0.6"
+base64 = "0.23"
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.10"
+sha2 = { version = "0.10", features = ["oid"] }
+uuid = { version = "1", features = ["v4"] }
+
+# CLI / terminal
+clap = { version = "4.6", features = ["derive"] }
+comfy-table = "8"
+console = "0.16"
+dialoguer = "0.12"
+indicatif = "0.18"
+
+# Web API backends
+reqwest_cookie_store = "0.10"   # document.cookie <-> real cookie jar
+cookie_store = "0.22"
+cookie = "0.18"
+tungstenite = { version = "0.30", default-features = false, features = ["rustls-tls-webpki-roots", "handshake"] }  # WebSocket
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }  # test-CA tolerant WebSocket TLS
+rustls-platform-verifier = "0.7"   # WebSocket TLS verifies certificates like reqwest does (already in the lock via reqwest)
+sha1 = { version = "0.10", features = ["oid"] }  # crypto.subtle
+hmac = "0.12"
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", default-features = false }
+hkdf = "0.12"
+rsa = { version = "0.9", features = ["sha2"] }                                  # crypto.subtle asymmetric keys
+p256 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8"] }
+p384 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8"] }
+p521 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8"] }
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc", "block-padding"] }
+ghash = "0.5"
+pkcs8 = "0.10"
+spki = "0.7"
+signature = "2"
+rand_core = { version = "0.6", features = ["getrandom"] }
+flate2 = "1"                    # CompressionStream / DecompressionStream
+encoding_rs = "0.8"             # TextDecoder + charset decoding of documents
+chardetng = "0.1"               # encoding detection of undeclared HTML documents
+arboard = { version = "3", default-features = false }  # navigator.clipboard
+
+# Layout engine (optional, feature "layout"): Stylo + Taffy + Parley via blitz-dom
+blitz-dom = { version = "0.3.0-beta.2", default-features = false, features = ["system-fonts", "svg", "woff"], optional = true }
+blitz-html = { version = "0.3.0-beta.2", default-features = false, optional = true }
+blitz-traits = { version = "0.3.0-beta.2", default-features = false, optional = true }
+style = { package = "stylo", version = "0.20.0", optional = true }
+# CSSOM declaration parsing/serialization through Stylo (src/layout/cssom.rs).
+style_traits = { package = "stylo_traits", version = "0.20.0", optional = true }
+cssparser = { version = "0.37", optional = true }
+euclid = { version = "0.22", optional = true }
+style_config = { package = "stylo_static_prefs", version = "0.20.0", optional = true }   # computed values of laid-out elements
+parley = { version = "0.11", default-features = false, optional = true }  # text line boxes for --format layout
+
+# Pixel screenshots (optional, feature "screenshot"): blitz-paint on the vello CPU renderer
+blitz-paint = { version = "0.3.0-beta.2", default-features = false, features = ["svg"], optional = true }
+anyrender = { version = "0.13", optional = true }
+anyrender_vello_cpu = { version = "0.17.0", default-features = false, optional = true }
+anyrender_svg = { version = "0.14", optional = true }   # SVG images drawn onto <canvas>
+usvg = { version = "0.48", optional = true }
+png = { version = "0.17", optional = true }
+vello_cpu = { version = "0.1.0", default-features = false, features = ["std", "u8_pipeline"], optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"], optional = true }
+# AVIF decoding (CDNs send AVIF by User-Agent even when Accept leaves it out): pure Rust, no asm/nasm
+rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"], optional = true }
+avif-parse = { version = "2.1", optional = true }
+
+# misc
+thiserror = "2"
+dirs = "6"
+# WebAuthn for real sites: passkey-rs client + CTAP2 software authenticator (src/js/passkeys.rs).
+passkey = "0.6"
+passkey-types = { version = "0.6", features = ["serialize_bytes_as_base64_string"] }
+async-trait = "0.1"
+pollster = "0.4"
+
+# Vault key protection (src/vault.rs): DPAPI binds the vault key to the Windows account.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+# FIDO security keys + Windows Hello through webauthn.dll (src/js/passkeys.rs `hardware`)
+passkey = { version = "0.6", features = ["windows"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[[bin]]
+name = "layout_spike"
+path = "src/bin/layout_spike.rs"
+required-features = ["layout"]
+
+# Local fixes to the layout engine (see vendor/blitz-dom).
+[patch.crates-io]
+blitz-dom = { path = "vendor/blitz-dom" }
+parley = { path = "vendor/parley" }
+taffy = { path = "vendor/taffy" }
+stylo_taffy = { path = "vendor/stylo_taffy" }
+vello_common = { path = "vendor/vello_common" }
+blitz-paint = { path = "vendor/blitz-paint" }

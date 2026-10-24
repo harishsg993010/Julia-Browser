@@ -1,0 +1,10 @@
+# Inventory
+
+| Name | Qty | Price |
+| --- | --- | --- |
+| Apples | 3 | 1.20 |
+| Pears | 5 | 2.50 |
+
+Left cell text
+
+Right cell text

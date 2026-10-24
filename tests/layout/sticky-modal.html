@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout fixture: sticky header and modal</title>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  header { position: sticky; top: 0; height: 48px; background: #fff; border-bottom: 1px solid #ddd; line-height: 48px; padding: 0 16px; }
+  .menu { display: none; }
+  main { padding: 16px; }
+  .backdrop { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.5); z-index: 50; }
+  .modal { position: fixed; top: 120px; left: 340px; width: 600px; height: 240px; background: #fff; z-index: 100; padding: 16px; }
+  .cookie { position: fixed; bottom: 0; left: 0; right: 0; height: 60px; background: #333; color: #fff; z-index: 60; padding: 0 16px; line-height: 60px; }
+</style>
+</head>
+<body>
+<header id="header">Site header <nav class="menu" id="menu">Hidden menu items</nav></header>
+<main id="main">
+  <h1>Article</h1>
+  <p>Body text one.</p>
+  <p>Body text two.</p>
+</main>
+<div class="backdrop" id="backdrop"></div>
+<div class="modal" id="modal"><h2>Subscribe</h2><p>Get our newsletter.</p><button id="close">Close</button></div>
+<div class="cookie" id="cookie">We use cookies. <button id="accept">Accept all</button></div>
+</body>
+</html>
