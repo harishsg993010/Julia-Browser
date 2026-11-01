@@ -49,6 +49,15 @@ use taffy::Layout;
 // viewport shifts each one (not inside another fixed or a transformed box) by the scroll offset.
 thread_local! {
     static PAINT_FIXED_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// The page's real scroll offset when the painted viewport is moved elsewhere (a clipped
+    /// screenshot of a document region): viewport-fixed boxes stay where the page shows them.
+    static FIXED_SCROLL: std::cell::Cell<Option<(f64, f64)>> = const { std::cell::Cell::new(None) };
+}
+
+/// julia-browser: paint viewport-fixed boxes as if the viewport were scrolled to `scroll` (CSS px)
+/// instead of the document's viewport scroll; `None` restores the default.
+pub fn set_fixed_scroll(scroll: Option<(f64, f64)>) {
+    FIXED_SCROLL.with(|c| c.set(scroll));
 }
 struct PaintFixedGuard;
 impl PaintFixedGuard {
@@ -343,6 +352,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // julia-browser: viewport-fixed boxes (see PAINT_FIXED_DEPTH); they are not culled by their
         // ancestors' scrollports
         let vs = self.dom.as_ref().viewport_scroll();
+        let vs = FIXED_SCROLL.with(|c| c.get()).map_or(vs, |(x, y)| blitz_dom::Point { x, y });
         let fixed_active = (vs.x != 0.0 || vs.y != 0.0) && PAINT_FIXED_DEPTH.with(|d| d.get()) == 0;
         let is_fixed = fixed_active
             && styles.clone_position() == style::properties::generated::longhands::position::computed_value::T::Fixed;
@@ -400,7 +410,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         } = *node.final_layout();
         let box_position = Vec2::new(location.x as f64, location.y as f64) * self.scale;
         let box_size = Size::new(size.width as f64, size.height as f64);
-        let border_box = Rect::from_origin_size(box_position.to_point(), box_size);
         let scaled_pb = (padding + border).map(f64::from);
         let content_position = kurbo::Point {
             x: scaled_pb.left,
@@ -421,7 +430,12 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             x: -self.initial_x,
             y: -self.initial_y,
         }) * transform;
-        let screen_bbox = screen_transform.transform_rect_bbox(overflow.union(border_box));
+        // julia-browser: the box's own extent (CSS px, from its origin, which `transform` already
+        // translated to) in device pixels; mixing scaled positions with unscaled sizes culled
+        // visible boxes at scales other than 1
+        let s = self.scale;
+        let local = overflow.union(Rect::from_origin_size(Point::ZERO, box_size));
+        let screen_bbox = screen_transform.transform_rect_bbox(Rect::new(local.x0 * s, local.y0 * s, local.x1 * s, local.y1 * s));
 
         // Cull elements that fall entirely outside the current clip rectangle. In addition to
         // the viewport, `clip_rect` is narrowed by any ancestor scrollport (see below), so this

@@ -290,6 +290,9 @@ def _obs_text(obs, err):
                      f"{' (in scroll pane)' if e.get('in_pane') else ''}{' (below fold)' if e.get('below_fold') else ''}")
     if not obs.get("elements"):
         lines.append("(none found)")
+    elif obs.get("truncated"):
+        lines.append(f"(list cut at {len(obs['elements'])} elements: more interactive elements exist on this page; "
+                     "scroll, or use find / read_page, to reach ones not listed)")
     if obs.get("md_excerpt"):
         s = obs["md_start"]
         lines.append(f"\nPage text (markdown, chars {s}-{s + len(obs['md_excerpt'])} of {obs['md_total']}, "

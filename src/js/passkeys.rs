@@ -59,13 +59,26 @@ fn unb64(s: &str) -> Option<Vec<u8>> {
 struct ProfileStore {
     creds: Vec<Passkey>,
     hidden: Vec<Value>,
+    /// Credential ids (base64url) present when the store was loaded: one of these missing from
+    /// `creds` / `hidden` at save time was removed; any other record in the vault then was added
+    /// by someone else meanwhile and is kept.
+    loaded: Vec<String>,
+    /// A site to add to the vault allowlist in the same write as the next save (registration).
+    allow_on_save: Option<String>,
+}
+
+/// The authenticator's answer when the vault write fails: the operation fails (closed) with a
+/// generic CTAP error, which the page sees as a plain NotAllowedError.
+fn store_failed() -> StatusCode {
+    Ctap2Error::Other.into()
 }
 
 impl ProfileStore {
     fn load() -> Result<Self, String> {
         let v = crate::vault::Vault::open()?;
         let (hidden, shown): (Vec<&Value>, Vec<&Value>) = v.passkeys().iter().partition(|p| p.get("hidden").and_then(Value::as_bool) == Some(true));
-        Ok(ProfileStore { creds: shown.into_iter().filter_map(Self::decode).collect(), hidden: hidden.into_iter().cloned().collect() })
+        let loaded = v.passkeys().iter().filter_map(|p| p.get("credentialId").and_then(Value::as_str).map(str::to_string)).collect();
+        Ok(ProfileStore { creds: shown.into_iter().filter_map(Self::decode).collect(), hidden: hidden.into_iter().cloned().collect(), loaded, allow_on_save: None })
     }
 
     fn decode(v: &Value) -> Option<Passkey> {
@@ -109,26 +122,61 @@ impl ProfileStore {
         v
     }
 
-    /// Write the passkeys back into the (re-read) vault, keeping each one's import metadata.
-    fn save(&self) {
+    /// Merge the passkeys back into the (re-read) vault and write it. Every other field of a
+    /// stored record (import metadata and the like) is kept, records this store never loaded
+    /// (added meanwhile) are kept, and only the ones it loaded and dropped are removed. `Err` when
+    /// the vault could not be opened or written: nothing was persisted.
+    fn save(&mut self) -> Result<(), String> {
         let _g = crate::vault::lock();
-        let Ok(mut v) = crate::vault::Vault::open() else { return };
-        let old = v.passkeys().to_vec();
-        let mut list: Vec<Value> = self
+        let mut v = crate::vault::Vault::open()?;
+        let mine: Vec<Value> = self
             .creds
             .iter()
-            .map(|p| {
-                let mut e = Self::encode(p, true);
-                let prev = old.iter().find(|o| o.get("credentialId") == e.get("credentialId"));
-                for k in ["source", "created"] {
-                    e[k] = prev.and_then(|o| o.get(k).cloned()).unwrap_or_else(|| if k == "source" { json!("webauthn") } else { json!(chrono::Utc::now().to_rfc3339()) });
-                }
-                e
-            })
+            .map(|p| Self::encode(p, true))
+            .chain(self.hidden.iter().cloned())
             .collect();
-        list.extend(self.hidden.iter().cloned());
+        let id_of = |x: &Value| x.get("credentialId").and_then(Value::as_str).map(str::to_string);
+        let mut list: Vec<Value> = Vec::new();
+        for old in v.passkeys() {
+            let id = id_of(old);
+            match mine.iter().find(|m| id.is_some() && id_of(m) == id) {
+                Some(m) => {
+                    let mut e = old.clone();
+                    if let (Some(obj), Some(new)) = (e.as_object_mut(), m.as_object()) {
+                        if m.get("hidden").and_then(Value::as_bool) != Some(true) {
+                            obj.remove("hidden");
+                        }
+                        for (k, val) in new {
+                            obj.insert(k.clone(), val.clone());
+                        }
+                    }
+                    list.push(e);
+                }
+                None if id.as_ref().map_or(false, |i| self.loaded.contains(i)) => {} // removed here
+                None => list.push(old.clone()),
+            }
+        }
+        for m in &mine {
+            let id = id_of(m);
+            if !v.passkeys().iter().any(|o| id.is_some() && id_of(o) == id) {
+                let mut e = m.clone();
+                if e.get("source").is_none() {
+                    e["source"] = json!("webauthn");
+                }
+                if e.get("created").is_none() {
+                    e["created"] = json!(chrono::Utc::now().to_rfc3339());
+                }
+                list.push(e);
+            }
+        }
         v.set_passkeys(list);
-        let _ = v.save();
+        if let Some(site) = &self.allow_on_save {
+            v.allow(site);
+        }
+        v.save()?;
+        self.loaded = v.passkeys().iter().filter_map(id_of).collect();
+        self.allow_on_save = None;
+        Ok(())
     }
 }
 
@@ -177,16 +225,21 @@ impl CredentialStore for ProfileStore {
             cred.user_display_name = user.display_name.clone();
         }
         self.creds.push(cred);
-        self.save();
-        Ok(())
+        self.save().map_err(|e| {
+            crate::vault::audit("passkey_save", "", "", "WebAuthn registration by the page", false, &format!("the vault write failed: {e}"));
+            store_failed()
+        })
     }
 
     async fn update_credential(&mut self, cred: &Passkey) -> Result<(), StatusCode> {
         if let Some(p) = self.creds.iter_mut().find(|p| p.credential_id == cred.credential_id) {
             *p = cred.clone();
         }
-        self.save();
-        Ok(())
+        // the signature counter must be stored before the assertion is handed out
+        self.save().map_err(|e| {
+            crate::vault::audit("passkey_counter", "", "", "WebAuthn sign-in by the page", false, &format!("the vault write failed: {e}"));
+            store_failed()
+        })
     }
 
     async fn get_info(&self) -> StoreInfo {
@@ -234,7 +287,8 @@ fn err(name: &str, message: String) -> Value {
     json!({"error": name, "message": message})
 }
 
-pub fn handle(payload: &Value) -> Value {
+/// `scope` is the calling session's task scope (src/vault.rs `Scope`).
+pub fn handle(payload: &Value, scope: &crate::vault::Scope) -> Value {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let op = payload.get("op").and_then(Value::as_str).unwrap_or("");
     let store = match ProfileStore::load() {
@@ -250,10 +304,23 @@ pub fn handle(payload: &Value) -> Value {
         "remove" => {
             let mut store = store;
             let id = payload.get("credentialId").and_then(Value::as_str).and_then(unb64).unwrap_or_default();
-            let before = store.creds.len();
+            let before = store.creds.len() + store.hidden.len();
             store.creds.retain(|p| *p.credential_id != *id);
-            store.save();
-            json!({"ok": before != store.creds.len()})
+            store.hidden.retain(|h| h.get("credentialId").and_then(Value::as_str).and_then(unb64).map_or(true, |c| c != id));
+            let removed = before != store.creds.len() + store.hidden.len();
+            if !removed {
+                return json!({"ok": false});
+            }
+            match store.save() {
+                Ok(()) => {
+                    crate::vault::audit("passkey_remove", "", "", "", true, &format!("credential {}", b64(&id)));
+                    json!({"ok": true})
+                }
+                Err(e) => {
+                    crate::vault::audit("passkey_remove", "", "", "", false, &format!("credential {}: the vault write failed: {e}", b64(&id)));
+                    err("UnknownError", "the passkey could not be removed".into())
+                }
+            }
         }
         "signal" => signal(store, payload),
         "create" | "get" => {
@@ -264,20 +331,11 @@ pub fn handle(payload: &Value) -> Value {
             let options = payload.get("options").cloned().unwrap_or(Value::Null);
             let host = origin.host_str().unwrap_or("").to_string();
             if crate::vault::uses_security_key(&host) {
-                return hardware(op, &origin, &host, options);
+                return hardware(op, &origin, &host, options, scope);
             }
             let action = if op == "create" { "passkey_create" } else { "passkey_get" };
             // Policy: signing in needs an allowed site; registering only needs the task scope.
-            let policy = {
-                let v = crate::vault::Vault::open();
-                match (&v, op) {
-                    (Ok(v), "get") => v.check_site(&host),
-                    _ => match crate::vault::scope() {
-                        Some(s) if !s.iter().any(|p| host == *p || host.ends_with(&format!(".{p}")) || p == "*") => Err(format!("{host} is outside this task's vault scope")),
-                        _ => Ok(()),
-                    },
-                }
-            };
+            let policy = if op == "get" { crate::vault::Vault::open().and_then(|v| v.check_site(&host, scope)) } else { scope.permits(&host) };
             if let Err(e) = policy {
                 crate::vault::audit(action, &host, "", "WebAuthn request by the page", false, &e);
                 return err("NotAllowedError", e);
@@ -293,15 +351,11 @@ pub fn handle(payload: &Value) -> Value {
                 let request = CredentialCreationOptions { public_key };
                 let user = request.public_key.user.name.clone();
                 let rp_id = request.public_key.rp.id.clone().unwrap_or_else(|| host.clone());
+                // The agent registers this passkey, so its site becomes allowed: in the same vault
+                // write as the credential, so neither is stored without the other.
+                client.authenticator_mut().store_mut().allow_on_save = Some(crate::vault::base_domain(&rp_id));
                 match pollster::block_on(client.register(&origin, request, DefaultClientData)) {
                     Ok(cred) => {
-                        // The agent registered this passkey, so its site becomes allowed.
-                        let _g = crate::vault::lock();
-                        if let Ok(mut v) = crate::vault::Vault::open() {
-                            if v.allow(&crate::vault::base_domain(&rp_id)) {
-                                let _ = v.save();
-                            }
-                        }
                         crate::vault::audit(action, &host, &user, "WebAuthn registration by the page", true, &format!("rp {rp_id}"));
                         json!({"ok": serde_json::to_value(&cred).unwrap_or(Value::Null)})
                     }
@@ -383,36 +437,33 @@ fn signal(mut store: ProfileStore, payload: &Value) -> Value {
         }
         other => return err("TypeError", format!("unknown signal {other}")),
     }
-    let meta = crate::vault::Vault::open().map(|v| v.passkeys().to_vec()).unwrap_or_default();
     for p in &hide {
+        // save() merges this into the stored record, keeping its other fields
         let mut e = ProfileStore::encode(p, true);
-        if let Some(old) = meta.iter().find(|o| o.get("credentialId") == e.get("credentialId")) {
-            for k in ["source", "created"] {
-                if let Some(v) = old.get(k) {
-                    e[k] = v.clone();
-                }
-            }
-        }
         e["hidden"] = json!(true);
         store.hidden.push(e);
     }
     changed += hide.len();
+    let kind = payload.get("kind").and_then(Value::as_str).unwrap_or("");
     if changed > 0 {
-        store.save();
-        crate::vault::audit("passkey_signal", &rp, "", "WebAuthn signal from the page", true, &format!("{} ({changed} passkeys changed)", payload.get("kind").and_then(Value::as_str).unwrap_or("")));
+        // The page's signal promise does not reveal whether anything changed (WebAuthn L3);
+        // this native status and the audit log do.
+        if let Err(e) = store.save() {
+            crate::vault::audit("passkey_signal", &rp, "", "WebAuthn signal from the page", false, &format!("{kind}: the vault write failed: {e}"));
+            return err("UnknownError", "the signal could not be stored".into());
+        }
+        crate::vault::audit("passkey_signal", &rp, "", "WebAuthn signal from the page", true, &format!("{kind} ({changed} passkeys changed)"));
     }
     json!({"ok": changed})
 }
 
 /// WebAuthn through the platform's FIDO stack (security keys, Windows Hello): a person answers
 /// the system prompt; nothing is stored in the vault.
-fn hardware(op: &str, origin: &Url, host: &str, options: Value) -> Value {
+fn hardware(op: &str, origin: &Url, host: &str, options: Value, scope: &crate::vault::Scope) -> Value {
     let action = if op == "create" { "security_key_create" } else { "security_key_get" };
-    if let Some(s) = crate::vault::scope() {
-        if !s.iter().any(|p| host == p || host.ends_with(&format!(".{p}")) || p == "*") {
-            crate::vault::audit(action, host, "", "WebAuthn request by the page", false, "outside the task scope");
-            return err("NotAllowedError", format!("{host} is outside this task's vault scope"));
-        }
+    if let Err(e) = scope.permits(host) {
+        crate::vault::audit(action, host, "", "WebAuthn request by the page", false, "outside the task scope");
+        return err("NotAllowedError", e);
     }
     let out = hardware_call(op, origin, options);
     match &out {
@@ -445,3 +496,136 @@ fn hardware_call(_op: &str, _origin: &Url, _options: Value) -> Result<Value, (&'
     Err(("NotSupportedError", "security keys are supported on Windows (webauthn.dll) only in this build".into()))
 }
 
+
+#[cfg(test)]
+mod tests {
+    //! Fail-closed persistence: when the vault cannot be written, registration, the sign-in
+    //! counter update, removal and signals report failure natively and leave the vault unchanged.
+    use super::*;
+    use crate::vault::{Scope, Vault};
+
+    fn options_create(user_id: &str) -> Value {
+        json!({
+            "rp": {"id": "example.com", "name": "Example"},
+            "user": {"id": user_id, "name": "alice", "displayName": "Alice"},
+            "challenge": b64(&[7u8; 32]),
+            "pubKeyCredParams": [{"type": "public-key", "alg": -7}],
+            "authenticatorSelection": {"residentKey": "required", "userVerification": "preferred"},
+        })
+    }
+
+    fn get_options() -> Value {
+        json!({"challenge": b64(&[9u8; 32]), "rpId": "example.com", "userVerification": "preferred"})
+    }
+
+    fn call(op: &str, extra: Value, scope: &Scope) -> Value {
+        let mut p = json!({"op": op, "origin": "https://example.com"});
+        if let (Some(o), Some(e)) = (p.as_object_mut(), extra.as_object()) {
+            for (k, v) in e {
+                o.insert(k.clone(), v.clone());
+            }
+        }
+        handle(&p, scope)
+    }
+
+    /// A directory where the vault's temp file goes makes every save fail.
+    fn block_writes(dir: &std::path::Path, on: bool) {
+        let tmp = dir.join("vault.jbv.tmp");
+        if on {
+            std::fs::create_dir_all(&tmp).unwrap();
+        } else {
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+    }
+
+    #[test]
+    fn vault_write_failures_fail_closed() {
+        let dir = std::env::temp_dir().join(format!("jb-vault-test-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("JB_VAULT_DIR", &dir);
+        std::env::set_var("JB_PASSKEY_STORE", dir.join("none.json"));
+        std::env::remove_var("JB_VAULT_PASSPHRASE");
+        std::env::remove_var("JB_FIDO");
+        let scope = Scope::default();
+        Vault::open().unwrap(); // create it
+
+        // 1. registration: no credential, no allowlist entry, generic page error
+        block_writes(&dir, true);
+        let r = call("create", json!({"options": options_create(&b64(b"user-1"))}), &scope);
+        assert_eq!(r["error"], "NotAllowedError", "{r}");
+        let v = Vault::open().unwrap();
+        assert!(v.passkeys().is_empty());
+        assert!(v.allowed_sites().is_empty());
+        block_writes(&dir, false);
+        let r = call("create", json!({"options": options_create(&b64(b"user-1"))}), &scope);
+        assert!(r.get("ok").is_some(), "{r}");
+        let v = Vault::open().unwrap();
+        assert_eq!(v.passkeys().len(), 1);
+        assert_eq!(v.allowed_sites(), ["example.com".to_string()], "credential and allowlist in one write");
+        let id = v.passkeys()[0]["credentialId"].as_str().unwrap().to_string();
+
+        // a record added by someone else after a load survives our saves; metadata is kept
+        let mut list = v.passkeys().to_vec();
+        list[0]["source"] = json!("imported-x");
+        list[0]["note"] = json!("keep me");
+        list[0]["counter"] = json!(5); // a counter that sign-in must advance and store
+        let mut foreign = list[0].clone();
+        foreign["credentialId"] = json!(b64(b"foreign"));
+        foreign["rpId"] = json!("other.example");
+        list.push(foreign);
+        let mut v = v;
+        v.set_passkeys(list);
+        v.save().unwrap();
+
+        // 2. sign-in: the counter update must persist before the assertion is returned
+        let counter = |v: &Vault| v.passkeys().iter().find(|p| p["credentialId"] == id.as_str()).map(|p| p["counter"].clone());
+        let before = counter(&Vault::open().unwrap());
+        block_writes(&dir, true);
+        let r = call("get", json!({"options": get_options()}), &scope);
+        assert_eq!(r["error"], "NotAllowedError", "{r}");
+        assert_eq!(counter(&Vault::open().unwrap()), before);
+        block_writes(&dir, false);
+        let r = call("get", json!({"options": get_options()}), &scope);
+        assert!(r.get("ok").is_some(), "{r}");
+        let v = Vault::open().unwrap();
+        assert_ne!(counter(&v), before);
+        let mine = v.passkeys().iter().find(|p| p["credentialId"] == id.as_str()).unwrap();
+        assert_eq!(mine["source"], "imported-x");
+        assert_eq!(mine["note"], "keep me");
+        assert!(v.passkeys().iter().any(|p| p["credentialId"] == b64(b"foreign").as_str()));
+
+        // 3. signal: native status says it failed; nothing hidden
+        block_writes(&dir, true);
+        let r = call("signal", json!({"kind": "unknown", "rpId": "example.com", "credentialId": id}), &scope);
+        assert!(r.get("error").is_some(), "{r}");
+        assert!(Vault::open().unwrap().passkeys().iter().all(|p| p.get("hidden").is_none()));
+        block_writes(&dir, false);
+        let r = call("signal", json!({"kind": "unknown", "rpId": "example.com", "credentialId": id}), &scope);
+        assert_eq!(r["ok"], 1, "{r}");
+        let v = Vault::open().unwrap();
+        let mine = v.passkeys().iter().find(|p| p["credentialId"] == id.as_str()).unwrap();
+        assert_eq!(mine["hidden"], true);
+        assert_eq!(mine["note"], "keep me");
+
+        // 4. removal: reports failure and keeps the passkey
+        block_writes(&dir, true);
+        let r = call("remove", json!({"credentialId": id}), &scope);
+        assert!(r.get("error").is_some(), "{r}");
+        assert_eq!(Vault::open().unwrap().passkeys().len(), 2);
+        block_writes(&dir, false);
+        let r = call("remove", json!({"credentialId": id}), &scope);
+        assert_eq!(r["ok"], true, "{r}");
+        let v = Vault::open().unwrap();
+        assert_eq!(v.passkeys().len(), 1, "only the removed one goes");
+
+        // scope: another session's narrowing does not affect this one
+        let other = Scope::default();
+        other.set(Some(vec!["nowhere.test".into()]));
+        let r = call("create", json!({"options": options_create(&b64(b"user-2"))}), &other);
+        assert_eq!(r["error"], "NotAllowedError");
+        let r = call("create", json!({"options": options_create(&b64(b"user-2"))}), &scope);
+        assert!(r.get("ok").is_some(), "{r}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

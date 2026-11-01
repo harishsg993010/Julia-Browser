@@ -38,9 +38,15 @@ pub fn render_rgba(layout: &mut Layout, opts: &ScreenshotOptions) -> Result<(Vec
     let doc = layout.base_mut();
     let previous = doc.viewport_scroll();
     doc.set_viewport_scroll(blitz_dom::Point { x: x0, y: y0 });
+    // A clip is a document region: position: fixed boxes are where the page currently shows them
+    // (at its real scroll), not moved along with the painted region.
+    if opts.clip.is_some() {
+        blitz_paint::set_fixed_scroll(Some((previous.x, previous.y)));
+    }
     let mut renderer = VelloCpuImageRenderer::new(pw, ph);
     let mut pixels = Vec::new();
     renderer.render_to_vec(|scene| blitz_paint::paint_scene(scene, doc, scale, pw, ph, 0, 0), &mut pixels);
+    blitz_paint::set_fixed_scroll(None);
     doc.set_viewport_scroll(previous);
 
     // Premultiplied RGBA over a white page background, then opaque.

@@ -69,3 +69,31 @@ fn clipped_screenshot_captures_one_element() {
     let (w2, h2, _) = decode(&scaled);
     assert_eq!((w2, h2), (804, 404));
 }
+
+/// Document regions (not only the first viewport) at device scales 1 and 2: the stripes of a tall
+/// page come out where the clip says, including clips that start below the last full viewport.
+#[test]
+fn clip_regions_at_scales() {
+    let html = r#"<!DOCTYPE html><html><head><style>html,body{margin:0}div{width:1280px;height:500px}</style></head><body>
+        <div style="background:#ff0000"></div><div style="background:#00ff00"></div><div style="background:#0000ff"></div><div style="background:#ffff00"></div></body></html>"#;
+    let mut layout = Layout::from_html(html, "file:///stripes.html", HttpClient::new(None), DEFAULT_VIEWPORT, 0);
+    let rect = |x: f64, y: f64, w: f64, h: f64| julia_browser::layout::Rect { x, y, width: w, height: h, ..Default::default() };
+    for scale in [1.0, 2.0] {
+        let s = scale as u32;
+        // straddles red / green
+        let png = render_png(&mut layout, &ScreenshotOptions { clip: Some(rect(0.0, 450.0, 100.0, 100.0)), scale, ..Default::default() }).expect("png");
+        let (w, h, rgba) = decode(&png);
+        assert_eq!((w, h), (100 * s, 100 * s), "scale {scale}");
+        assert_eq!(pixel(&rgba, w, 50 * s, 25 * s), [255, 0, 0], "scale {scale}: red above y=500");
+        assert_eq!(pixel(&rgba, w, 50 * s, 75 * s), [0, 255, 0], "scale {scale}: green below y=500");
+        // the last stripe: beyond the largest viewport scroll (2000 - 720)
+        let png = render_png(&mut layout, &ScreenshotOptions { clip: Some(rect(600.0, 1900.0, 80.0, 80.0)), scale, ..Default::default() }).expect("png");
+        let (w, h, rgba) = decode(&png);
+        assert_eq!((w, h), (80 * s, 80 * s), "scale {scale}");
+        assert_eq!(pixel(&rgba, w, 40 * s, 40 * s), [255, 255, 0], "scale {scale}: yellow at y=1940");
+        // fractional origin: the top row is still the stripe at that y
+        let png = render_png(&mut layout, &ScreenshotOptions { clip: Some(rect(10.5, 999.5, 20.0, 20.0)), scale, ..Default::default() }).expect("png");
+        let (w, _, rgba) = decode(&png);
+        assert_eq!(pixel(&rgba, w, 10 * s, 15 * s), [0, 0, 255], "scale {scale}: blue below y=1000");
+    }
+}

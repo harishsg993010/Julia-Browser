@@ -107,8 +107,12 @@ _OBSERVE_SRC = r"""(() => {
     else if (r.top > H) o.below_fold = true;
     out.push(o);
   };
-  for (const el of all) {
-    if (out.length >= 150) break;
+  // the list is capped (LIMIT); when candidates are left over, the result says so (truncated)
+  const LIMIT = 150;
+  let truncated = false;
+  for (let ai = 0; ai < all.length; ai++) {
+    const el = all[ai];
+    if (out.length >= LIMIT) { truncated = true; break; }
     let r; try { r = el.getBoundingClientRect(); } catch (e) { continue; }
     if (extra.has(el) && r && r.width >= W * 0.9 && r.height >= H * 0.5) continue;
     // custom-styled checkboxes/radios (opacity 0 or 1px, drawn by their label): use the label's box
@@ -127,7 +131,7 @@ _OBSERVE_SRC = r"""(() => {
   }
   // controls far down (or up) an on-screen scroll pane
   for (const [el, r] of farCands) {
-    if (out.length >= 150) break;
+    if (out.length >= LIMIT) { truncated = true; break; }
     let inPane = false;
     for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) { const v = anc.get(a); if (v && v.pane) { inPane = true; break; } }
     if (!inPane) continue;
@@ -155,7 +159,7 @@ _OBSERVE_SRC = r"""(() => {
     for (let p = el; p; p = p.parentElement) if (listed.has(p)) return true;
     return false;
   };
-  if (out.length < 150) {
+  if (out.length < LIMIT) {
     const all = document.getElementsByTagName('*');
     for (let n = all.length - 1; n >= 0 && picked.length < 60; n--) {
       const el = all[n];
@@ -173,7 +177,7 @@ _OBSERVE_SRC = r"""(() => {
   }
   for (const [el, r, hb] of picked.reverse()) {
     el.removeAttribute('data-jb-c');
-    if (out.length >= 150) continue;
+    if (out.length >= LIMIT) { truncated = true; continue; }
     const label = clean(el.getAttribute('aria-label')) || clean(el.innerText || el.textContent) || clean(el.title || el.getAttribute('alt') || el.getAttribute('data-id') || '');
     const idx = BASE + out.length;
     marks.push([el, idx]);
@@ -190,7 +194,7 @@ _OBSERVE_SRC = r"""(() => {
       const t = clean([...sr.children].filter(c => !/^(STYLE|SCRIPT|LINK)$/.test(c.tagName)).map(c => c.innerText || c.textContent).join(' '));
       if (t) text += ' | ' + t.slice(0, 300);
     }
-    return {elements: out, text: text.slice(0, 3000)};
+    return {elements: out, truncated, text: text.slice(0, 3000)};
   }
   const frames = [];
   if (SELF) {
@@ -205,13 +209,14 @@ _OBSERVE_SRC = r"""(() => {
       try { w.__jbObsBase = BASE + out.length; w.__jbObsInFrame = true; sub = w.eval(SELF); } catch (e) { sub = null; }
       try { w.__jbObsInFrame = false; w.__jbObsBase = 0; } catch (e) {}
       if (!sub || !sub.elements) continue;
-      for (const e of sub.elements) { if (out.length >= 220) break; e.frame = true; if (fr.top + 20 > H) e.below_fold = true; out.push(e); }
+      if (sub.truncated) truncated = true;
+      for (const e of sub.elements) { if (out.length >= 220) { truncated = true; break; } e.frame = true; if (fr.top + 20 > H) e.below_fold = true; out.push(e); }
       if (sub.text) frames.push({src: (f.getAttribute('src') || '').slice(0, 100), text: sub.text});
     }
   }
   const se = document.scrollingElement || document.documentElement;
   return {url: location.href, title: document.title, scroll_y: Math.round(window.scrollY || 0),
-          page_height: Math.round(se ? se.scrollHeight : 0), viewport_h: H, elements: out, frames};
+          page_height: Math.round(se ? se.scrollHeight : 0), viewport_h: H, elements: out, truncated, frames};
 })()"""
 _FRAME_SRC = _OBSERVE_SRC.replace("__OBS_SELF__", '""')
 OBSERVE_JS = _OBSERVE_SRC.replace("__OBS_SELF__", json.dumps(_FRAME_SRC))

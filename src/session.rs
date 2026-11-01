@@ -330,6 +330,8 @@ fn js_str(v: &str) -> String {
 /// The live browser of a session.
 pub struct Session {
     agent: AgentSdk,
+    /// This session's vault task scope, shared with its pages' JS hosts through the JS config.
+    vault_scope: crate::vault::Scope,
     tabs: Vec<String>,
     active: usize,
     #[cfg(feature = "images")]
@@ -349,12 +351,16 @@ impl Session {
         if js.action_settle_ms.is_none() {
             js.action_settle_ms = Some(std::env::var("JB_SETTLE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(2500));
         }
+        // This session owns its vault scope (never one shared with another session in the process).
+        js.vault_scope = crate::vault::Scope::default();
+        let vault_scope = js.vault_scope.clone();
         let mut agent = AgentSdk::with_js_config(user_agent, 30, js);
         agent.engine.execute_js = execute_js;
         agent.skip_action_content = true;
         agent.open_blank();
         Session {
             agent,
+            vault_scope,
             tabs: vec!["about:blank".into()],
             active: 0,
             #[cfg(feature = "images")]
@@ -434,8 +440,8 @@ impl Session {
             "new_password" | "newpassword" => self.vault_fill("new", args),
             "vault_scope" => {
                 let sites: Option<Vec<String>> = args.get("sites").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect());
-                crate::vault::set_scope(sites.clone().filter(|s| !s.is_empty()));
-                match crate::vault::scope() {
+                self.vault_scope.set(sites.clone().filter(|s| !s.is_empty()));
+                match self.vault_scope.get() {
                     Some(s) => ok(format!("✓ Vault scope: {}", s.join(", ")), json!({"sites": s})),
                     None => ok("✓ Vault scope: every allowed site", json!({"sites": null})),
                 }
@@ -743,7 +749,7 @@ impl Session {
         if kind == "login" && url::Url::parse(origin).map(|u| u.scheme() == "http").unwrap_or(false) && !matches!(host.as_str(), "localhost" | "127.0.0.1") {
             return fail(format!("the vault does not fill passwords over plain http ({origin})"));
         }
-        let (values, account) = match crate::vault::secrets_for(kind, &host, s(args, "account"), s(args, "username"), &reason) {
+        let (values, account) = match crate::vault::secrets_for(kind, &host, s(args, "account"), s(args, "username"), &reason, &self.vault_scope) {
             Ok(v) => v,
             Err(e) => return fail(e),
         };

@@ -399,11 +399,46 @@ __jb.placeholderCss = function (css) {
   }
   return out + css.slice(pos);
 };
+// Focus reaches the layout mirror as attributes (it has no focus state of its own): the focused
+// element and the shadow hosts around it carry data-jbfo (data-jbfv when :focus-visible too), it
+// and every flat-tree ancestor data-jbfw, and :focus / :focus-visible / :focus-within in style
+// sheets become those attribute selectors. A focus change invalidates the layout, as hover does.
+__jb.layoutFocusSets = function () {
+  if (__jb.wptMode) return null;
+  var doc = __jb.currentDocument, fa = doc && doc._jbActive;
+  if (!fa || !fa.isConnected || fa === doc.body || fa === doc.documentElement) return null;
+  var focus = new Set([fa]), within = new Set();
+  for (var fr = fa.getRootNode(); fr && fr.nodeType === 11 && fr._host; fr = fr._host.getRootNode()) focus.add(fr._host);
+  for (var n = fa; n && n.nodeType === 1;) {
+    within.add(n);
+    var p = n.parentNode;
+    n = p && p.nodeType === 11 ? p._host : p;
+  }
+  return { focus: focus, within: within, visible: fa._focusVisible !== false };
+};
+__jb.focusChanged = function (doc, prev, next) {
+  if (__jb.wptMode || doc !== __jb.currentDocument) return;
+  __jb.layoutVersion++; __jb.geomVersion = (__jb.geomVersion || 0) + 1;
+  var dirty = __jb.styleDirtyEls || (__jb.styleDirtyEls = new Set());
+  [prev, next].forEach(function (el) {
+    for (var n = el; n && n.nodeType === 1;) { dirty.add(n); var p = n.parentNode; n = p && p.nodeType === 11 ? p._host : p; }
+  });
+};
+if (typeof Document === "function" && !Object.getOwnPropertyDescriptor(Document.prototype, "_jbActive")) {
+  Object.defineProperty(Document.prototype, "_jbActive", {
+    get: function () { return this._jbActiveEl === undefined ? null : this._jbActiveEl; },
+    set: function (v) { var prev = this._jbActiveEl === undefined ? null : this._jbActiveEl; this._jbActiveEl = v; if (prev !== v) __jb.focusChanged(this, prev, v); },
+    configurable: true,
+  });
+  // documents made before this point keep their focus in an own property: move it behind the accessor
+  if (__jb.currentDocument && Object.prototype.hasOwnProperty.call(__jb.currentDocument, "_jbActive")) { var own = __jb.currentDocument._jbActive; delete __jb.currentDocument._jbActive; __jb.currentDocument._jbActiveEl = own; }
+}
 __jb.exportLayoutHtml = function () {
   __jb.assignLayoutIds();
   __jb.serializeWithIds = true;
   __jb.layoutPresRules = [];
   __jb.layoutHover = !__jb.wptMode && __jb.hoverChain && __jb.hoverChain.length ? new Set(__jb.hoverChain) : null;
+  __jb.layoutFocus = __jb.layoutFocusSets();
   __jb.layoutExportSeq = (__jb.layoutExportSeq || 0) + 1;
   __jb.layoutEmittedCss = __jb.wptMode ? null : new Set();
   __jb.layoutPresIds = __jb.wptMode ? null : new Map();
@@ -438,6 +473,8 @@ __jb.exportLayoutHtml = function () {
     if (html.indexOf("placeholder") >= 0) styleFix.push(fixPh);
     if (html.indexOf(":defined") >= 0) styleFix.push(fixDef);
     if (!__jb.wptMode && html.indexOf(":hover") >= 0) styleFix.push(fixHover);
+    var fixFocus = function (b) { return b.replace(/(?<!\\):focus-within(?![\w-])/g, "[data-jbfw]").replace(/(?<!\\):focus-visible(?![\w-])/g, "[data-jbfv]").replace(/(?<!\\):focus(?![\w-])/g, "[data-jbfo]"); }; fixFocus.jbKey = "f";
+    if (!__jb.wptMode && html.indexOf(":focus") >= 0) styleFix.push(fixFocus);
     // :popover-open / :modal -> the jb-open / jb-modal attributes the mirror puts on them (blitz has
     // no such states; Steam hides its filter flyouts with :not(:popover-open)); escaped class names stay
     var fixPopover = function (b) { return b.replace(/(?<!\\):(popover-open|modal)(?![\w-])/g, function (m, s) { return s === "modal" ? "[jb-modal]" : "[jb-open]"; }); }; fixPopover.jbKey = "o";
@@ -469,7 +506,7 @@ __jb.exportLayoutHtml = function () {
     if (html.indexOf('href="blob:') >= 0 && typeof __jb.hostImageUrl === "function") html = html.replace(/(<link\b[^>]*?\shref=")(blob:[^"]+)(")/gi, function (m, a, u, c) { return a + __jb.hostImageUrl(u.replace(/&amp;/g, "&")) + c; });
     return html;
   }
-  finally { __jb.serializeWithIds = false; __jb.layoutHover = null; __jb.layoutPresRules = null; __jb.layoutEmittedCss = null; __jb.layoutPresIds = null; }
+  finally { __jb.serializeWithIds = false; __jb.layoutHover = null; __jb.layoutFocus = null; __jb.layoutPresRules = null; __jb.layoutEmittedCss = null; __jb.layoutPresIds = null; }
 };
 // A computed-style query for cascade-only properties (font-size, display, overflow, ...) of an element
 // the current layout knows, when neither it nor an ancestor had its style/class changed since that

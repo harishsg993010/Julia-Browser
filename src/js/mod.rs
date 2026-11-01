@@ -1271,9 +1271,14 @@ impl JavaScriptEngine {
     /// state persist; otherwise the document is mirrored into a fresh realm.
     pub fn execute_script(&mut self, script: &str, doc: Option<&mut Document>, url: &str) -> JsExecution {
         let mut exec = JsExecution::default();
-        if let Err(e) = self.ensure_env() {
-            exec.errors.push(e.to_string());
-            return exec;
+        // Only a live realm is reused. Otherwise `load_document` below starts a fresh global and
+        // evaluates the environment there; loading it here first as well would be discarded at
+        // once (a fresh CDP target paid for two environment runs on its first evaluation).
+        if self.is_live(url) {
+            if let Err(e) = self.ensure_env() {
+                exec.errors.push(e.to_string());
+                return exec;
+            }
         }
         let mut scratch;
         let doc: &mut Document = match doc {

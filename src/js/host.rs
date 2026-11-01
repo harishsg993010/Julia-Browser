@@ -66,6 +66,12 @@ pub struct JsConfig {
     /// user's data directory (per-task profiles in agent benchmarks; `JB_PROFILE_DIR` sets it for
     /// the CLI). Empty string = in-memory only.
     pub profile_dir: Option<std::path::PathBuf>,
+    /// The owning session's vault task scope (`vault_scope`): clones of this config share it, so
+    /// WebAuthn on the session's pages sees what the session set, and no other session's value.
+    pub vault_scope: crate::vault::Scope,
+    /// Viewport override (CSS px width, height, device pixel ratio) for new documents
+    /// (CDP `Emulation.setDeviceMetricsOverride`); `None`: 1280x720 at 1x.
+    pub viewport: Option<(u32, u32, f64)>,
 }
 
 impl Default for JsConfig {
@@ -88,6 +94,8 @@ impl Default for JsConfig {
             service_workers: true,
             action_settle_ms: None,
             profile_dir: std::env::var_os("JB_PROFILE_DIR").map(std::path::PathBuf::from),
+            vault_scope: crate::vault::Scope::default(),
+            viewport: None,
         }
     }
 }
@@ -1681,7 +1689,11 @@ impl NativeHost for Host {
                 json!(self.config.notification_permission)
             }
             "notification_permission" => json!(self.config.notification_permission),
-            "webauthn" => super::passkeys::handle(&payload),
+            "viewport" => match self.config.viewport {
+                Some((w, h, dpr)) => json!([w, h, dpr]),
+                None => Value::Null,
+            },
+            "webauthn" => super::passkeys::handle(&payload, &self.config.vault_scope),
             #[cfg(feature = "layout")]
             "cssdecl" => crate::layout::cssom::handle(&payload),
             "idb" => {

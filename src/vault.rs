@@ -18,7 +18,7 @@
 //! older plaintext `passkeys.json` is migrated on first open and then deleted.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -32,8 +32,33 @@ const PBKDF2_ROUNDS: u32 = 600_000;
 
 /// One process-wide lock around read-modify-write of the vault file.
 static LOCK: Mutex<()> = Mutex::new(());
-/// Sites the current task may use (`vault_scope`); `None` = every allowed site.
-static SCOPE: RwLock<Option<Vec<String>>> = RwLock::new(None);
+
+/// Sites the current task may use (`vault_scope`), owned by one session / engine: clones share
+/// the setting (the session, its pages' JS hosts and WebAuthn see the same value), while separate
+/// sessions in one process each have their own. `None` = every allowed site. The persistent
+/// allowlist in the vault always applies on top of it.
+#[derive(Clone, Default, Debug)]
+pub struct Scope(Arc<RwLock<Option<Vec<String>>>>);
+
+impl Scope {
+    /// Narrow the sites this session's agent may use (`None` lifts the narrowing).
+    pub fn set(&self, sites: Option<Vec<String>>) {
+        let mut g = self.0.write().unwrap_or_else(|e| e.into_inner());
+        *g = sites.map(|v| v.iter().map(|s| normalize_site(s)).filter(|s| !s.is_empty()).collect());
+    }
+
+    pub fn get(&self) -> Option<Vec<String>> {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Is `host` inside the task scope (ignoring the allowlist)?
+    pub fn permits(&self, host: &str) -> Result<(), String> {
+        match self.get() {
+            Some(scope) if !scope.iter().any(|p| site_matches(p, host)) => Err(format!("{host} is outside this task's vault scope ({})", scope.join(", "))),
+            _ => Ok(()),
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Login {
@@ -408,17 +433,13 @@ impl Vault {
         false
     }
 
-    /// May the agent use credentials on this host right now? `Err` explains why not.
-    pub fn check_site(&self, host: &str) -> Result<(), String> {
+    /// May the agent use credentials on this host right now (persistent allowlist, then the
+    /// session's task scope)? `Err` explains why not.
+    pub fn check_site(&self, host: &str, scope: &Scope) -> Result<(), String> {
         if !self.data.allowed_sites.iter().any(|p| site_matches(p, host)) {
             return Err(format!("{host} is not an allowed site for the vault (allow it with `julia-browser vault allow {}`)", base_domain(host)));
         }
-        if let Some(scope) = SCOPE.read().ok().and_then(|g| g.clone()) {
-            if !scope.iter().any(|p| site_matches(p, host)) {
-                return Err(format!("{host} is outside this task's vault scope ({})", scope.join(", ")));
-            }
-        }
-        Ok(())
+        scope.permits(host)
     }
 }
 
@@ -433,17 +454,6 @@ pub fn uses_security_key(host: &str) -> bool {
 /// Serialize vault writers in this process.
 pub fn lock() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Narrow the sites this process's agent may use (`None` lifts the narrowing).
-pub fn set_scope(sites: Option<Vec<String>>) {
-    if let Ok(mut g) = SCOPE.write() {
-        *g = sites.map(|v| v.iter().map(|s| normalize_site(s)).filter(|s| !s.is_empty()).collect());
-    }
-}
-
-pub fn scope() -> Option<Vec<String>> {
-    SCOPE.read().ok().and_then(|g| g.clone())
 }
 
 // ---- sites
@@ -509,7 +519,7 @@ pub fn read_audit(last: usize) -> Vec<Value> {
 
 /// What to type for a `login` / `otp` / `new_password` request on `host`, after the policy check
 /// (which is audited either way). Returns the values for the page script and the account name.
-pub fn secrets_for(kind: &str, host: &str, account: Option<&str>, username: Option<&str>, reason: &str) -> Result<(Value, String), String> {
+pub fn secrets_for(kind: &str, host: &str, account: Option<&str>, username: Option<&str>, reason: &str, scope: &Scope) -> Result<(Value, String), String> {
     let action = match kind {
         "otp" => "otp",
         "new" => "new_password",
@@ -520,20 +530,21 @@ pub fn secrets_for(kind: &str, host: &str, account: Option<&str>, username: Opti
     if kind == "new" {
         // A new account: generate and store a password; the site becomes allowed for this login.
         let user = username.map(str::trim).filter(|u| !u.is_empty()).ok_or("new_password needs the account's username or email")?;
-        if let Some(scope) = scope() {
-            if !scope.iter().any(|p| site_matches(p, host)) {
-                audit(action, host, user, reason, false, "outside the task scope");
-                return Err(format!("{host} is outside this task's vault scope ({})", scope.join(", ")));
-            }
+        if let Err(e) = scope.permits(host) {
+            audit(action, host, user, reason, false, "outside the task scope");
+            return Err(e);
         }
         let password = generate_password(20);
         v.add_login(Login { urls: vec![format!("https://{host}")], username: user.to_string(), password: password.clone(), source: "generated".into(), ..Default::default() });
         v.allow(&base_domain(host));
-        v.save()?;
+        if let Err(e) = v.save() {
+            audit(action, host, user, reason, false, &format!("the new password was not saved: {e}"));
+            return Err(format!("the new password could not be saved in the vault: {e}"));
+        }
         audit(action, host, user, reason, true, "generated and saved a new password");
         return Ok((json!({"password": password, "username": user}), user.to_string()));
     }
-    if let Err(e) = v.check_site(host) {
+    if let Err(e) = v.check_site(host, scope) {
         audit(action, host, account.unwrap_or(""), reason, false, &e);
         return Err(e);
     }
@@ -974,6 +985,40 @@ mod tests {
         assert!(!site_matches("github.com", "evilgithub.com"));
         let p = generate_password(20);
         assert_eq!(p.len(), 20);
+    }
+
+    #[test]
+    fn scopes_are_per_owner() {
+        let a = Scope::default();
+        let b = Scope::default();
+        let a2 = a.clone();
+        a.set(Some(vec!["https://www.github.com/login".into()]));
+        // a clone (the same session's JS host) sees the change; another session does not
+        assert_eq!(a2.get(), Some(vec!["github.com".to_string()]));
+        assert_eq!(b.get(), None);
+        assert!(a.permits("gist.github.com").is_ok());
+        assert!(a.permits("example.com").is_err());
+        assert!(b.permits("example.com").is_ok());
+        // widening one session does not widen another
+        b.set(Some(vec!["*".into()]));
+        assert!(a.permits("example.com").is_err());
+        a.set(None);
+        assert!(a.permits("example.com").is_ok());
+        assert_eq!(b.get(), Some(vec!["*".to_string()]));
+    }
+
+    #[test]
+    fn check_site_needs_allowlist_and_scope() {
+        let mut data = Payload1::default();
+        data.allowed_sites.push("github.com".into());
+        let v = Vault { dir: PathBuf::new(), header: Value::Null, key: [0; 32], data };
+        let s = Scope::default();
+        assert!(v.check_site("github.com", &s).is_ok());
+        assert!(v.check_site("example.com", &s).is_err());
+        s.set(Some(vec!["*".into()]));
+        assert!(v.check_site("example.com", &s).is_err(), "the scope never widens the allowlist");
+        s.set(Some(vec!["example.com".into()]));
+        assert!(v.check_site("github.com", &s).is_err());
     }
 
     #[test]

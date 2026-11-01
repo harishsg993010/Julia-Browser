@@ -84,6 +84,42 @@ pub enum HttpError {
     Other(String),
 }
 
+/// One request as a [`NetHook`] sees it (internal `x-jb-*` marker headers removed).
+pub struct NetRequest {
+    /// Unique in the process.
+    pub id: u64,
+    pub method: String,
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    pub body: Option<Vec<u8>>,
+    /// Fetch destination ("document", "script", "image", "empty" for fetch()/XHR, "" unknown).
+    pub dest: String,
+    /// fetch()/XHR mode ("cors", "navigate", ...), "" unknown.
+    pub mode: String,
+}
+
+/// What a [`NetHook`] decides for a request before it is sent.
+pub enum NetDecision {
+    /// Send it, with any of these replaced.
+    Continue { url: Option<String>, method: Option<String>, headers: Option<BTreeMap<String, String>>, body: Option<Vec<u8>> },
+    /// Answer with this response; nothing goes to the network.
+    Fulfill(HttpResponse),
+    /// Fail the request with this network error (e.g. "net::ERR_FAILED").
+    Fail(String),
+}
+
+/// Observes and controls the requests of one client (the CDP Network and Fetch domains).
+/// Called on whichever thread makes the request.
+pub trait NetHook: Send + Sync {
+    /// Is the hook observing or controlling requests now? While it is, background prefetches
+    /// (which bypass it) are off, so every request is seen before it is sent.
+    fn active(&self) -> bool;
+    fn before(&self, req: &NetRequest) -> NetDecision;
+    fn after(&self, req: &NetRequest, result: &Result<HttpResponse, HttpError>, from_network: bool);
+}
+
+static NET_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// A cloneable HTTP session (shared cookie jar + default headers).
 #[derive(Clone)]
 pub struct HttpClient {
@@ -102,6 +138,8 @@ pub struct HttpClient {
     /// Responses of `<link rel=preload>` requests, keyed "dest|mode|url": the next matching
     /// request consumes one instead of going to the network.
     preloaded: Arc<Mutex<std::collections::HashMap<String, (std::time::Instant, HttpResponse)>>>,
+    /// Network observer / interceptor (CDP); shared by every clone of this client.
+    net_hook: Arc<RwLock<Option<Arc<dyn NetHook>>>>,
 }
 
 // Test-page switches shared by every client of the process (anonymous / per-request clients too).
@@ -455,7 +493,13 @@ impl HttpClient {
             prefetch: Arc::new(Prefetch::default()),
             timings: Arc::new(Mutex::new(Vec::new())),
             preloaded: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            net_hook: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Install (or with `None` remove) the network hook of this client and all its clones.
+    pub fn set_net_hook(&self, hook: Option<Arc<dyn NetHook>>) {
+        *self.net_hook.write().unwrap_or_else(|e| e.into_inner()) = hook;
     }
 
     pub fn set_network_error_logging(&self, on: bool) {
@@ -602,6 +646,9 @@ impl HttpClient {
 
     /// Like `prefetch`, sending `headers`; only a later GET with the same headers reuses it.
     pub fn prefetch_with(&self, urls: Vec<String>, headers: BTreeMap<String, String>, timeout_secs: u64) {
+        if self.net_hook.read().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|h| h.active()) {
+            return; // each request goes through `request` (and the hook) when it is made
+        }
         let mut queue = Vec::new();
         {
             let mut slots = self.prefetch.slots.lock().unwrap();
@@ -784,6 +831,85 @@ impl HttpClient {
     /// Generic request. `body` is sent raw with the given headers. Plain GETs (no extra headers,
     /// redirects followed) reuse a prefetched response when there is one.
     pub fn request(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &BTreeMap<String, String>,
+        body: Option<Vec<u8>>,
+        timeout_secs: u64,
+        allow_redirects: bool,
+    ) -> Result<HttpResponse, HttpError> {
+        let hook = self.net_hook.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some(hook) = hook else {
+            return self.request_inner(method, url, headers, body, timeout_secs, allow_redirects);
+        };
+        let get = |k: &str| headers.iter().find(|(hk, _)| hk.eq_ignore_ascii_case(k)).map(|(_, v)| v.clone()).unwrap_or_default();
+        let meta = get(FETCH_META);
+        let mut parts = meta.splitn(4, '|');
+        let (mut dest, mut mode) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
+        if dest.is_empty() {
+            dest = get("Sec-Fetch-Dest").to_ascii_lowercase();
+            mode = get("Sec-Fetch-Mode").to_ascii_lowercase();
+        }
+        let mut shown: BTreeMap<String, String> = headers.iter().filter(|(k, _)| !k.to_ascii_lowercase().starts_with("x-jb-")).map(|(k, v)| (k.clone(), v.clone())).collect();
+        if !shown.keys().any(|k| k.eq_ignore_ascii_case("user-agent")) {
+            shown.insert("User-Agent".into(), self.user_agent());
+        }
+        // A navigation the hook watches follows its redirects one hop at a time, each hop a request
+        // of its own (CDP reports every hop and Fetch pauses each, as in Chrome).
+        if allow_redirects && dest == "document" && hook.active() {
+            let (mut method, mut url, mut body) = (method.to_string(), url.to_string(), body);
+            for _ in 0..20 {
+                let r = self.request(&method, &url, headers, body.clone(), timeout_secs, false)?;
+                let next = if matches!(r.status, 301 | 302 | 303 | 307 | 308) { r.headers.get("location").and_then(|l| Url::parse(&url).ok()?.join(l.trim()).ok()) } else { None };
+                let Some(next) = next else { return Ok(r) };
+                if r.status == 303 || (matches!(r.status, 301 | 302) && method.eq_ignore_ascii_case("POST")) {
+                    method = "GET".into();
+                    body = None;
+                }
+                url = next.to_string();
+            }
+            return Err(HttpError::Other("net::ERR_TOO_MANY_REDIRECTS".into()));
+        }
+        let mut req = NetRequest { id: NET_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed), method: method.to_string(), url: url.to_string(), headers: shown, body: body.clone(), dest, mode };
+        match hook.before(&req) {
+            NetDecision::Fail(reason) => {
+                let r = Err(HttpError::Other(reason));
+                hook.after(&req, &r, false);
+                r
+            }
+            NetDecision::Fulfill(resp) => {
+                let r = Ok(resp);
+                hook.after(&req, &r, false);
+                r
+            }
+            NetDecision::Continue { url: new_url, method: new_method, headers: new_headers, body: new_body } => {
+                let changed = new_url.is_some() || new_method.is_some() || new_headers.is_some() || new_body.is_some();
+                if !changed {
+                    let r = self.request_inner(method, url, headers, body, timeout_secs, allow_redirects);
+                    hook.after(&req, &r, true);
+                    return r;
+                }
+                // overrides keep the internal markers of the original request
+                let mut h: BTreeMap<String, String> = headers.iter().filter(|(k, _)| k.to_ascii_lowercase().starts_with("x-jb-")).map(|(k, v)| (k.clone(), v.clone())).collect();
+                match new_headers {
+                    Some(nh) => h.extend(nh),
+                    None => h.extend(req.headers.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent") || headers.keys().any(|o| o.eq_ignore_ascii_case("user-agent"))).map(|(k, v)| (k.clone(), v.clone()))),
+                }
+                let m = new_method.unwrap_or_else(|| method.to_string());
+                let u = new_url.unwrap_or_else(|| url.to_string());
+                let b = if new_body.is_some() { new_body } else { body };
+                let r = self.request_inner(&m, &u, &h, b.clone(), timeout_secs, allow_redirects);
+                req.method = m;
+                req.url = u;
+                req.body = b;
+                hook.after(&req, &r, true);
+                r
+            }
+        }
+    }
+
+    fn request_inner(
         &self,
         method: &str,
         url: &str,

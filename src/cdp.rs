@@ -30,6 +30,9 @@ use serde_json::{json, Value};
 use crate::agent::AgentSdk;
 use crate::js::JsConfig;
 
+#[path = "cdp_net.rs"]
+mod net;
+
 const HELPER: &str = include_str!("cdp_helper.js");
 /// Native stack of a page thread (the engine reserves a 24 MiB quota inside it).
 const PAGE_STACK: usize = 256 * 1024 * 1024;
@@ -133,6 +136,8 @@ struct TargetInfo {
 struct Target {
     tx: Sender<PageMsg>,
     info: Arc<Mutex<TargetInfo>>,
+    /// Network / Fetch state, answered on the connection thread.
+    net: Arc<net::CdpNet>,
 }
 
 struct Conn {
@@ -286,9 +291,11 @@ impl Shared {
         let (tx, rx) = mpsc::channel();
         let info = Arc::new(Mutex::new(TargetInfo { url: "about:blank".into(), title: String::new(), context: context.to_string(), attached: false }));
         let shared = self.clone();
-        let (pid, pinfo) = (id.clone(), info.clone());
+        let sinks: net::Sinks = Arc::new(Mutex::new(Vec::new()));
+        let netstate = Arc::new(net::CdpNet::new(id.clone(), sinks.clone()));
+        let (pid, pinfo, pnet) = (id.clone(), info.clone(), netstate.clone());
         let spawned = std::thread::Builder::new().name(format!("cdp-page-{}", &id[..8])).stack_size(PAGE_STACK).spawn(move || {
-            let mut page = Page::new(shared, pid, pinfo);
+            let mut page = Page::new(shared, pid, pinfo, sinks, pnet);
             page.run(rx);
             // free the page's engine and JavaScript runtime with the target
             drop(page);
@@ -298,7 +305,7 @@ impl Shared {
             Ok(h) => self.threads.lock().unwrap().push(h),
             Err(_) => return id,
         }
-        self.targets.lock().unwrap().insert(id.clone(), Target { tx: tx.clone(), info });
+        self.targets.lock().unwrap().insert(id.clone(), Target { tx: tx.clone(), info, net: netstate });
         let info = self.targets.lock().unwrap().get(&id).map(|t| self.target_info(&id, t)).unwrap_or(Value::Null);
         self.broadcast_discover("Target.targetCreated", json!({"targetInfo": info}));
         let auto: Vec<u64> = self.conns.lock().unwrap().iter().filter(|(_, c)| c.auto_attach).map(|(k, _)| *k).collect();
@@ -338,6 +345,8 @@ impl Shared {
 
     fn close_target(&self, id: &str) -> bool {
         let Some(t) = self.targets.lock().unwrap().remove(id) else { return false };
+        // a request paused by Fetch must not keep the page thread from closing
+        t.net.release_all(|| crate::http::NetDecision::Fail("net::ERR_ABORTED".into()));
         let _ = t.tx.send(PageMsg::Close);
         let info = json!({"targetId": id});
         for c in self.conns.lock().unwrap().values_mut() {
@@ -452,6 +461,9 @@ fn serve_connection(stream: TcpStream, shared: Arc<Shared>) {
     std::thread::spawn(move || {
         let Some(w) = writer.as_mut() else { return };
         while let Ok(m) = out_rx.recv() {
+            if m == WRITER_STOP {
+                break; // the connection closed: free this thread and its socket handle now
+            }
             log("->", &m);
             let frame = ws_text_frame(m.as_bytes());
             let _guard = lock.lock().unwrap();
@@ -481,10 +493,25 @@ fn serve_connection(stream: TcpStream, shared: Arc<Shared>) {
             Err(_) => break,
         }
     }
-    shared.conns.lock().unwrap().remove(&conn_id);
-    // the writer thread stops at its next write
+    // Unsubscribe the connection from its targets (their event sinks hold this connection's
+    // sender) and stop its writer thread, which would otherwise wait for the next page event.
+    let closed = shared.conns.lock().unwrap().remove(&conn_id);
+    let targets = shared.targets.lock().unwrap();
+    if let Some(c) = closed {
+        for (session, target) in &c.sessions {
+            if let Some(t) = targets.get(target) {
+                let _ = t.tx.send(PageMsg::Detach(session.clone()));
+            }
+        }
+    }
+    drop(targets);
+    // (a page-endpoint connection's sink goes at the target's next event: its receiver is gone)
+    let _ = out_tx.send(WRITER_STOP.to_string());
     let _ = raw.shutdown(std::net::Shutdown::Both);
 }
+
+/// Sent on a connection's outgoing queue when it closes: its writer thread exits.
+const WRITER_STOP: &str = "\u{0}writer-stop";
 
 /// The server side of a WebSocket connection: reads go straight to the socket, writes take the
 /// lock shared with the writer thread.
@@ -562,8 +589,16 @@ fn handle_message(shared: &Arc<Shared>, conn: u64, bound: Option<&str>, out: &Se
     };
     if let Some(t) = target {
         if !method.starts_with("Target.") || session.is_some() && matches!(method.as_str(), "Target.setAutoAttach" | "Target.setDiscoverTargets") {
-            let tx = shared.targets.lock().unwrap().get(&t).map(|t| t.tx.clone());
-            match tx {
+            let found = shared.targets.lock().unwrap().get(&t).map(|t| (t.tx.clone(), t.net.clone()));
+            // Network / Fetch state commands do not wait for the page thread, which may itself be
+            // waiting on a request paused by Fetch.
+            if let Some((_, n)) = &found {
+                if let Some(result) = n.command(&method, &params) {
+                    let _ = out.send(response(&id, result, session.as_deref()));
+                    return;
+                }
+            }
+            match found.map(|(tx, _)| tx) {
                 Some(tx) => {
                     let _ = tx.send(PageMsg::Cmd { id, session, method, params, out: out.clone() });
                 }
@@ -700,7 +735,8 @@ struct Page {
     target_id: String,
     info: Arc<Mutex<TargetInfo>>,
     agent: AgentSdk,
-    sinks: Vec<(Option<String>, Sender<String>)>,
+    sinks: net::Sinks,
+    net: Arc<net::CdpNet>,
     loader_id: String,
     /// Execution contexts of the current document: (id, world name; "" for the main world).
     contexts: Vec<(i64, String)>,
@@ -718,6 +754,8 @@ struct Page {
     settle_ms: u64,
     /// When the page's event loop last ran (idle pumping catches up from here).
     last_run: Instant,
+    /// `Emulation.setDeviceMetricsOverride`: (width, height, device scale factor).
+    viewport: Option<(u32, u32, f64)>,
 }
 
 /// While no command arrives, the page's timers and network callbacks run every this many ms,
@@ -725,7 +763,7 @@ struct Page {
 const IDLE_PUMP_MS: u64 = 50;
 
 impl Page {
-    fn new(shared: Arc<Shared>, target_id: String, info: Arc<Mutex<TargetInfo>>) -> Self {
+    fn new(shared: Arc<Shared>, target_id: String, info: Arc<Mutex<TargetInfo>>, sinks: net::Sinks, netstate: Arc<net::CdpNet>) -> Self {
         let mut js = shared.opts.js.clone();
         if js.action_settle_ms.is_none() {
             js.action_settle_ms = Some(std::env::var("JB_SETTLE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(50));
@@ -735,13 +773,15 @@ impl Page {
         agent.engine.execute_js = shared.opts.execute_js;
         // commands read the page through JS; the Rust document is only synced for screenshots
         agent.engine.js_engine.defer_dom_sync = true;
+        agent.engine.session.set_net_hook(Some(netstate.clone()));
         agent.open_blank();
         let mut page = Page {
             shared,
             target_id,
             info,
             agent,
-            sinks: Vec::new(),
+            sinks,
+            net: netstate,
             loader_id: hex_id(32),
             contexts: Vec::new(),
             worlds: Vec::new(),
@@ -756,6 +796,7 @@ impl Page {
             next_script: 1,
             settle_ms,
             last_run: Instant::now(),
+            viewport: None,
         };
         page.new_contexts();
         page
@@ -771,8 +812,8 @@ impl Page {
                     }
                     return;
                 }
-                Ok(PageMsg::Attach { session, out }) => self.sinks.push((session, out)),
-                Ok(PageMsg::Detach(s)) => self.sinks.retain(|(x, _)| x.as_deref() != Some(s.as_str())),
+                Ok(PageMsg::Attach { session, out }) => self.sinks.lock().unwrap().push((session, out)),
+                Ok(PageMsg::Detach(s)) => self.sinks.lock().unwrap().retain(|(x, _)| x.as_deref() != Some(s.as_str())),
                 Ok(PageMsg::Navigate(url)) => {
                     let _ = self.navigate(&url);
                 }
@@ -800,7 +841,7 @@ impl Page {
     // ---- events
 
     fn emit(&mut self, method: &str, params: Value) {
-        self.sinks.retain(|(s, out)| out.send(event(method, params.clone(), s.as_deref())).is_ok());
+        self.sinks.lock().unwrap().retain(|(s, out)| out.send(event(method, params.clone(), s.as_deref())).is_ok());
     }
 
     fn frame(&self) -> Value {
@@ -850,7 +891,9 @@ impl Page {
     /// Events of a new document in the frame: after `Page.navigate`, a link click, a form
     /// submission or a location change made by the page.
     fn document_changed(&mut self, load: Option<&crate::agent::PageLoad>, requested: &str) {
-        self.loader_id = hex_id(32);
+        // the document request's id when the network hook saw it (its Network events are out)
+        let (loader, live) = self.net.begin_document();
+        self.loader_id = loader;
         self.last_run = Instant::now();
         for p in std::mem::take(&mut self.pending) {
             let _ = p.out.send(response(&p.id, Err("Execution context was destroyed.".into()), p.session.as_deref()));
@@ -858,7 +901,7 @@ impl Page {
         let url = self.agent.current_url.clone().unwrap_or_else(|| requested.to_string());
         self.emit("Page.frameStartedLoading", json!({"frameId": self.target_id}));
         self.lifecycle_event("init");
-        if !url.starts_with("about:") {
+        if !url.starts_with("about:") && !live && self.net.network_enabled() {
             let (status, reason, headers, len) = match load {
                 Some(l) => (l.status, l.reason.clone(), l.headers.clone(), l.body_len),
                 None => (200, "OK".to_string(), BTreeMap::new(), 0),
@@ -893,7 +936,10 @@ impl Page {
             let console = self.agent.engine.last_js.as_ref().map(|j| j.console.clone()).unwrap_or_default();
             self.emit_console(&console);
         }
-        // page-side setup of the new document: bindings and scripts to evaluate on new documents
+        // page-side setup of the new document: viewport, bindings, scripts to evaluate on new documents
+        if self.viewport.is_some() {
+            self.apply_viewport(false);
+        }
         for b in self.bindings.clone() {
             let _ = self.quick(&format!("(__jb.cdp.addBinding({}), null)", js_str(&b)));
         }
@@ -916,6 +962,21 @@ impl Page {
             i.title = if title == "No title" { String::new() } else { title };
         }
         self.shared.target_changed(&self.target_id);
+    }
+
+    /// Size the page's viewport (`innerWidth` / `innerHeight`, which layout lays out at) to the
+    /// override, or back to 1280x720; `resize` fires when it changed.
+    fn apply_viewport(&mut self, fire: bool) {
+        let (w, h, dpr) = self.viewport.unwrap_or((1280, 720, 1.0));
+        self.agent.engine.js_engine.config.viewport = self.viewport;
+        let _ = self.quick(&format!(
+            "(function (w, h, d, fire) {{ var g = globalThis, changed = g.innerWidth !== w || g.innerHeight !== h; \
+             g.innerWidth = g.outerWidth = w; g.innerHeight = g.outerHeight = h; g.devicePixelRatio = d; \
+             if (g.screen) {{ try {{ Object.defineProperty(g.screen, 'width', {{ value: w, configurable: true }}); Object.defineProperty(g.screen, 'height', {{ value: h, configurable: true }}); \
+             Object.defineProperty(g.screen, 'availWidth', {{ value: w, configurable: true }}); Object.defineProperty(g.screen, 'availHeight', {{ value: h, configurable: true }}); }} catch (e) {{}} }} \
+             if (__jb.layoutState) {{ __jb.layoutState.key = -1; __jb.layoutState.builtAt = 0; }} \
+             if (changed && fire && typeof g.dispatchEvent === 'function' && typeof Event === 'function') g.dispatchEvent(new Event('resize')); return null; }})({w}, {h}, {dpr}, {fire})"
+        ));
     }
 
     fn href(&mut self) -> String {
@@ -1079,6 +1140,7 @@ impl Page {
     }
 
     fn navigate(&mut self, url: &str) -> Result<Value, String> {
+        self.net.reset_document();
         match self.agent.load_page(url) {
             Ok(load) => {
                 let final_url = load.url.clone();
@@ -1087,7 +1149,10 @@ impl Page {
                 Ok(json!({"frameId": self.target_id, "loaderId": self.loader_id}))
             }
             Err(e) => {
-                let text = if e.contains("dns") || e.contains("resolve") || e.contains("No such host") {
+                let net_err = e.find("net::ERR_").map(|i| e[i..].split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':')).next().unwrap_or("").to_string());
+                let text = if let Some(t) = net_err.as_deref() {
+                    t
+                } else if e.contains("dns") || e.contains("resolve") || e.contains("No such host") {
                     "net::ERR_NAME_NOT_RESOLVED"
                 } else if e.contains("refused") {
                     "net::ERR_CONNECTION_REFUSED"
@@ -1144,6 +1209,16 @@ impl Page {
                 now(json!({}))
             }
             "Page.getFrameTree" => now(json!({"frameTree": {"frame": self.frame(), "childFrames": []}})),
+            "Page.setDocumentContent" => {
+                if s("frameId") != self.target_id {
+                    return Err("No frame for given id found".into());
+                }
+                let html = p.get("html").and_then(Value::as_str).ok_or("Invalid parameters: html: string value expected")?;
+                // replace the live document (as Chrome does: document.open / write / close)
+                self.task(&format!("(function (h) {{ var d = __jb.currentDocument; d.open(); d.write(h); d.close(); return null; }})({})", js_str(html)))?;
+                self.last_href = self.href();
+                now(json!({}))
+            }
             "Page.getResourceTree" => now(json!({"frameTree": {"frame": self.frame(), "childFrames": [], "resources": []}})),
             "Page.navigate" => {
                 let url = s("url");
@@ -1355,7 +1430,32 @@ impl Page {
                 now(json!({}))
             }
             "Network.getCookies" | "Network.getAllCookies" | "Network.setCookie" | "Network.setCookies" | "Network.deleteCookies" | "Network.clearBrowserCookies" | "Storage.getCookies" | "Storage.setCookies" | "Storage.clearCookies" => now(self.cookies(method, p)?),
-            "Network.getResponseBody" => Err("No resource with given identifier found".into()),
+
+            // ---- Emulation
+            "Emulation.setDeviceMetricsOverride" | "Emulation.setVisibleSize" => {
+                let f = |k: &str| p.get(k).and_then(Value::as_f64);
+                let (w, h) = (f("width").unwrap_or(0.0), f("height").unwrap_or(0.0));
+                let dpr = f("deviceScaleFactor").unwrap_or(0.0);
+                if !(0.0..=10_000_000.0).contains(&w) || !(0.0..=10_000_000.0).contains(&h) {
+                    return Err("Width and height values must be positive, not greater than 10000000".into());
+                }
+                if dpr < 0.0 {
+                    return Err("deviceScaleFactor must be non-negative".into());
+                }
+                // 0 keeps the default for that dimension
+                let old = self.viewport.unwrap_or((1280, 720, 1.0));
+                let w = if w > 0.0 { w as u32 } else if method == "Emulation.setVisibleSize" { old.0 } else { 1280 };
+                let h = if h > 0.0 { h as u32 } else if method == "Emulation.setVisibleSize" { old.1 } else { 720 };
+                let dpr = if dpr > 0.0 { dpr } else if method == "Emulation.setVisibleSize" { old.2 } else { 1.0 };
+                self.viewport = Some((w, h, dpr));
+                self.apply_viewport(true);
+                now(json!({}))
+            }
+            "Emulation.clearDeviceMetricsOverride" => {
+                self.viewport = None;
+                self.apply_viewport(true);
+                now(json!({}))
+            }
 
             // ---- domains accepted without effect
             m if m.ends_with(".enable") || m.ends_with(".disable") => now(json!({})),

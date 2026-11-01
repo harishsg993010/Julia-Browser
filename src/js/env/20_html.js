@@ -218,6 +218,10 @@ __jb.serializeNode = function (node, includeShadow, xml) {
       if (formState) out += formState.attrs;
       if (__jb.serializeWithIds && node.__jbid !== undefined) { out += ' data-jb="' + node.__jbid + '"'; if (!__jb.ceDefined(node)) out += ' data-jbu=""'; }
       if (__jb.layoutHover && includeShadow === true && __jb.layoutHover.has(node)) out += ' data-jbhv=""';
+      if (__jb.layoutFocus && includeShadow === true) {
+        if (__jb.layoutFocus.within.has(node)) out += ' data-jbfw=""';
+        if (__jb.layoutFocus.focus.has(node)) out += __jb.layoutFocus.visible ? ' data-jbfo="" data-jbfv=""' : ' data-jbfo=""';
+      }
       // SVG presentation attributes reach the layout as zero-specificity author rules (see exportLayoutHtml).
       if (includeShadow === true && !xml && (node._ns === __jb.SVG_NS || (node._ns === __jb.MATHML_NS && __jb.mathmlPresentationDecls)) && __jb.layoutPresRules) {
         var decls = node._ns === __jb.SVG_NS ? __jb.svgPresentationDecls(node) : __jb.mathmlPresentationDecls(node);
