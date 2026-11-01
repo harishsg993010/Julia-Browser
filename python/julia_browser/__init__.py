@@ -38,7 +38,7 @@ from ._native import ENGINE_VERSION, Engine as _Engine, serve_cdp as _serve_cdp,
 # otherwise C++ static destructors abort the process on Linux.
 atexit.register(_shutdown)
 
-__version__ = "3.0.0"
+__version__ = "3.0.1"
 __author__ = "Harish Santhanalakshmi Ganesan"
 __email__ = "harishsg99@gmail.com"
 __all__ = [

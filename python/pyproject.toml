@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "julia-browser"
-version = "3.0.0"
+version = "3.0.1"
 description = "A headless web browser for Python: real JavaScript (SpiderMonkey), layout, screenshots and an agent API, written in Rust"
 readme = "README.md"
 license = { text = "MIT" }

@@ -1,6 +1,6 @@
 [package]
 name = "julia-browser-py"
-version = "3.0.0"
+version = "3.0.1"
 edition = "2021"
 authors = ["Harish Santhanalakshmi Ganesan <harishsg99@gmail.com>"]
 description = "Python bindings (PyO3) for the julia-browser engine"
